@@ -60,15 +60,27 @@ def test_hypothetical_factor_shock_direction_is_adverse_to_betas() -> None:
     assert shock["HML"] == 0.0  # zero beta -> zero-sign shock magnitude is 0
 
 
-def test_hypothetical_factor_shock_magnitude_uses_n_sigma() -> None:
+def test_hypothetical_factor_shock_magnitude_uses_n_sigma_and_horizon() -> None:
     factors = _synthetic_factors(n=250)
     betas = pd.Series({"MF": 1.0, "SMB": 1.0, "HML": 1.0, "WML": 1.0})
     start, end = factors.index[0], factors.index[-1]
 
-    shock = hypothetical_factor_shock(factors, betas, start, end, n_sigma=3.0)
+    shock = hypothetical_factor_shock(factors, betas, start, end, n_sigma=3.0, horizon_days=21)
 
-    expected_vol = factors.loc[start:end, ["MF", "SMB", "HML", "WML"]].std()
-    assert np.allclose(shock.abs(), 3.0 * expected_vol)
+    daily_vol = factors.loc[start:end, ["MF", "SMB", "HML", "WML"]].std()
+    expected = 3.0 * daily_vol * np.sqrt(21)
+    assert np.allclose(shock.abs(), expected)
+
+
+def test_hypothetical_factor_shock_scales_with_sqrt_horizon() -> None:
+    factors = _synthetic_factors(n=250)
+    betas = pd.Series({"MF": 1.0, "SMB": 1.0, "HML": 1.0, "WML": 1.0})
+    start, end = factors.index[0], factors.index[-1]
+
+    shock_1d = hypothetical_factor_shock(factors, betas, start, end, n_sigma=3.0, horizon_days=1)
+    shock_4d = hypothetical_factor_shock(factors, betas, start, end, n_sigma=3.0, horizon_days=4)
+
+    assert np.allclose(shock_4d.abs(), 2.0 * shock_1d.abs())  # sqrt(4) == 2
 
 
 def test_scenario_impact_decomposition_sums_to_total() -> None:

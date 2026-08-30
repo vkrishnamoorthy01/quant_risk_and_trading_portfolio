@@ -55,19 +55,30 @@ table:
   It ignores compounding effects and the alpha/idiosyncratic contribution
   to the portfolio's actual historical P&L — the reported scenario impact
   is the portion explained by systematic factor exposure alone.
-- **Hypothetical factor shock**, calibrated statistically rather than by
-  picking arbitrary numbers: each of MF, SMB, HML, and WML is shocked by
-  **3 standard deviations of its own historical daily volatility**,
-  estimated over the same trailing 3-year window used for the VaR
-  analysis. Each factor's shock direction is chosen adverse to this
-  portfolio — opposite the sign of its estimated beta — so the scenario
-  represents a simultaneous, portfolio-unfavorable move in every factor,
-  sized to what the data says is a severe (roughly 3-sigma) but not
-  physically arbitrary move for each one.
+- **Hypothetical factor shock (21-day horizon)**, calibrated statistically
+  rather than by picking arbitrary numbers: each of MF, SMB, HML, and WML
+  is shocked by **3 standard deviations of its own historical daily
+  volatility**, estimated over the same trailing 3-year window used for
+  the VaR analysis, then scaled to a cumulative 21-trading-day
+  (~1-month) move via sqrt-time scaling (`daily_std * sqrt(21)`) —
+  consistent with the summed, not compounded, aggregation used for the
+  historical scenarios above. Each factor's shock direction is adverse to
+  this portfolio — opposite the sign of its estimated beta. The 21-day
+  horizon was chosen to match the COVID window's length, so that scenario
+  is horizon-comparable; **the GFC window is 139 trading days (~6.5
+  months) and is a longer, structurally different sustained-drawdown
+  event, not a sharp shock, so it remains a different horizon from the
+  hypothetical scenario even after this fix.** An earlier version of this
+  shock used a single day's volatility with no horizon scaling, which
+  understated it by roughly √21 ≈ 4.6x relative to the multi-day historical
+  scenarios — a horizon mismatch, not a difference in underlying severity.
 
 For all three scenarios, P&L impact is Σ(beta_i × shock_i) × notional, and
 a scenario is flagged as a **VaR breach** when its implied loss exceeds
-the parametric 99% VaR.
+the parametric 99% VaR. Because the three scenarios span different
+horizons (139 trading days, 21 trading days, and 21 trading days
+respectively), their P&L impacts are not on equal footing and should be
+read as horizon-specific rather than directly ranked against each other.
 
 **VaR backtesting.** Each VaR estimate (historical and parametric, at 95%
 and 99%) is checked against the same trailing 3-year window's realized

@@ -17,6 +17,13 @@ GFC_WINDOW = ("2008-09-01", "2009-03-31")
 # 2020-03-23.
 COVID_WINDOW = ("2020-02-20", "2020-03-23")
 
+# Horizon for the hypothetical shock: ~1 trading month, chosen to match the
+# COVID window's length (21 trading days) so at least one historical
+# scenario is horizon-comparable. GFC (139 trading days) remains a longer,
+# structurally different sustained-drawdown scenario, not a sharp shock -
+# see README for the horizon-comparability caveat.
+HYPOTHETICAL_HORIZON_DAYS = 21
+
 
 def historical_factor_shock(factors: pd.DataFrame, start: str, end: str) -> pd.Series:
     """Sum realized daily factor returns over a historical window.
@@ -50,15 +57,23 @@ def hypothetical_factor_shock(
     start: str,
     end: str,
     n_sigma: float = 3.0,
+    horizon_days: int = HYPOTHETICAL_HORIZON_DAYS,
 ) -> pd.Series:
-    """Build a statistically calibrated adverse factor shock.
+    """Build a statistically calibrated adverse factor shock over a multi-day horizon.
 
-    Each factor is shocked by `n_sigma` times its own historical daily
-    volatility, estimated over [start, end] — the same window used for the
-    VaR analysis, so the shock size is calibrated to observed risk rather
-    than an arbitrary guess. Each factor's shock direction is adverse to
-    this portfolio: opposite the sign of its estimated beta, so a
-    positive-beta factor is shocked negative and vice versa.
+    Each factor's daily volatility is estimated over [start, end] — the
+    same window used for the VaR analysis — then scaled to a `horizon_days`
+    cumulative move of `n_sigma` standard deviations via sqrt-time scaling
+    (cumulative_std = daily_std * sqrt(horizon_days)), consistent with the
+    summed (not compounded) aggregation `historical_factor_shock` uses for
+    the historical scenarios. Without this scaling, a "3-sigma" shock would
+    be a single-day move and much smaller than a multi-day crisis window,
+    understating it by roughly sqrt(horizon_days) and making the scenarios
+    silently incomparable in severity.
+
+    Each factor's shock direction is adverse to this portfolio: opposite
+    the sign of its estimated beta, so a positive-beta factor is shocked
+    negative and vice versa.
 
     Args:
         factors: Factor DataFrame from `load_daily_factors`.
@@ -67,6 +82,8 @@ def hypothetical_factor_shock(
         start: VaR window start date, "YYYY-MM-DD".
         end: VaR window end date, "YYYY-MM-DD" (inclusive).
         n_sigma: Number of standard deviations for the shock (default 3.0).
+        horizon_days: Number of trading days the shock is meant to
+            represent (default 21, matching the COVID window's length).
 
     Returns:
         Series of signed shock sizes, indexed by FACTOR_COLUMNS.
@@ -75,8 +92,9 @@ def hypothetical_factor_shock(
     if window.empty:
         raise ValueError(f"No factor data between {start} and {end}.")
     daily_vol = window.std()
+    cumulative_vol = daily_vol * np.sqrt(horizon_days)
     adverse_sign = -np.sign(betas.reindex(FACTOR_COLUMNS))
-    return n_sigma * daily_vol * adverse_sign
+    return n_sigma * cumulative_vol * adverse_sign
 
 
 def scenario_impact(

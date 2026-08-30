@@ -90,7 +90,7 @@ def main() -> None:
     hypothetical_shock = hypothetical_factor_shock(factors, factor_result.betas, start, end, n_sigma=3.0)
     scenarios.append(
         run_scenario(
-            "Hypothetical 3-sigma shock",
+            "Hypothetical 3-sigma shock (21-day horizon)",
             factor_result.betas,
             hypothetical_shock,
             PORTFOLIO.notional,
