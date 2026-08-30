@@ -13,7 +13,7 @@ FACTOR_COLUMNS = ["MF", "SMB", "HML", "WML"]
 DEFAULT_FACTOR_PATH = Path(__file__).resolve().parent / "data" / "iima_ff_india_daily.csv"
 
 
-def load_iima_factors(path: str | Path = DEFAULT_FACTOR_PATH) -> pd.DataFrame:
+def load_daily_factors(path: str | Path = DEFAULT_FACTOR_PATH) -> pd.DataFrame:
     """Load IIMA's daily Fama-French-India factor data.
 
     IIMA publishes factor returns in percentage points (e.g. 1.38 means
@@ -57,7 +57,7 @@ def fit_factor_model(portfolio_returns: pd.Series, factors: pd.DataFrame) -> Fac
 
     Args:
         portfolio_returns: Daily portfolio returns indexed by date.
-        factors: Factor DataFrame from `load_iima_factors`, indexed by date,
+        factors: Factor DataFrame from `load_daily_factors`, indexed by date,
             including RF.
 
     Returns:

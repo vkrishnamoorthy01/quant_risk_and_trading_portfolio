@@ -8,10 +8,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from risk_project.factor_model import fit_factor_model, load_iima_factors
+from risk_project.factor_model import fit_factor_model, load_daily_factors
 
 
-def test_load_iima_factors_converts_percent_to_decimal_and_drops_na(tmp_path: Path) -> None:
+def test_load_daily_factors_converts_percent_to_decimal_and_drops_na(tmp_path: Path) -> None:
     csv_path = tmp_path / "factors.csv"
     csv_path.write_text(
         "Date,SMB,HML,WML,MF,RF\n"
@@ -20,7 +20,7 @@ def test_load_iima_factors_converts_percent_to_decimal_and_drops_na(tmp_path: Pa
         "1993-10-05,-0.5,-1.0,0.5,-1.0,0.02\n"
     )
 
-    factors = load_iima_factors(csv_path)
+    factors = load_daily_factors(csv_path)
 
     assert len(factors) == 2  # first row (NA MF/RF) dropped
     assert list(factors.columns) == ["SMB", "HML", "WML", "MF", "RF"]
