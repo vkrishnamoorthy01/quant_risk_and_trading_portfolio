@@ -69,6 +69,29 @@ For all three scenarios, P&L impact is Σ(beta_i × shock_i) × notional, and
 a scenario is flagged as a **VaR breach** when its implied loss exceeds
 the parametric 99% VaR.
 
+**VaR backtesting.** Each VaR estimate (historical and parametric, at 95%
+and 99%) is checked against the same trailing 3-year window's realized
+daily returns:
+
+- **Breach count / breach rate** — the fraction of days where the realized
+  loss exceeded the VaR estimate, compared against the rate the model
+  targets (5% for 95% VaR, 1% for 99% VaR).
+- **Kupiec's proportion-of-failures (POF) test** — a likelihood-ratio test
+  of whether the observed breach rate is statistically consistent with the
+  target rate. The statistic is asymptotically χ² with 1 degree of
+  freedom under the null hypothesis that the model is correctly
+  calibrated. **Interpretation:** a low p-value (conventionally < 0.05)
+  rejects that null — the model's breach rate is too far from what it
+  claims, in either direction (too many breaches means the model
+  understates risk; too few can mean it's overly conservative). A
+  high p-value means the observed breach rate is not statistically
+  distinguishable from the target — the test finds no evidence the model
+  is miscalibrated, which is a pass, not proof the model is correct.
+
+This is an **in-sample** backtest — the VaR estimate and the returns it's
+tested against cover the same window — rather than a rolling
+out-of-sample comparison (see Limitations).
+
 ### Limitations and assumptions
 
 - **Factor exposures are as of December 2025, not live.** IIMA's daily
@@ -90,6 +113,12 @@ the parametric 99% VaR.
   (non-factor) return component — actual historical P&L in a real crash
   would also reflect stock-specific effects the factor model doesn't
   capture.
+- VaR backtesting here is in-sample (the same 3-year window produces both
+  the VaR estimate and the returns it's tested against), which is
+  optimistic relative to a true out-of-sample test: a rolling backtest
+  (re-estimating VaR daily/monthly and checking only forward-looking
+  breaches) would be a more rigorous validation and is noted under future
+  work.
 
 ### Results
 
@@ -110,6 +139,9 @@ complete.
   publishes newer data, to close the vintage gap noted above.
 - Extend VaR to a Monte Carlo / historical-simulation hybrid to address the
   normality assumption in parametric VaR.
+- Replace the in-sample VaR backtest with a rolling out-of-sample backtest
+  (re-estimate VaR on a trailing window, check only forward breaches) for
+  a more rigorous validation than the current in-sample Kupiec test.
 
 ## signal_project
 
