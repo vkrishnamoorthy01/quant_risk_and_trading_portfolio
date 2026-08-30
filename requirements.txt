@@ -1,0 +1,8 @@
+pandas
+numpy
+scipy
+statsmodels
+kiteconnect
+python-dotenv
+matplotlib
+pytest
