@@ -94,6 +94,11 @@ out-of-sample comparison (see Limitations).
 
 ### Limitations and assumptions
 
+- Tata Motors was excluded from the portfolio universe due to its October
+  2025 demerger (renaming to TMPV, with the commercial vehicle business
+  spun off as a separate listed entity), which would have complicated
+  continuous historical data over the 3-year window. Mahindra & Mahindra
+  was substituted to preserve auto-sector representation.
 - **Factor exposures are as of December 2025, not live.** IIMA's daily
   Fama-French-India dataset runs through 2025-12-31, while the portfolio's
   price data runs closer to the present. The factor regression window is

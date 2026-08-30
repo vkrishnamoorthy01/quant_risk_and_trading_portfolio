@@ -35,7 +35,7 @@ PORTFOLIO = PortfolioConfig(
         "HINDUNILVR",
         "ITC",
         "MARUTI",
-        "TATAMOTORS",
+        "M&M",
         "SUNPHARMA",
         "DRREDDY",
         "TATASTEEL",
