@@ -138,8 +138,68 @@ out-of-sample comparison (see Limitations).
 
 ### Results
 
-TBD — to be filled in once stress testing and VaR backtesting are
-complete.
+Produced by `python -m risk_project.run_report` on 2026-08-30, over the
+trailing 3-year price window 2023-08-30 to 2026-08-30 (743 trading days).
+
+**Value at Risk** (₹1 crore notional):
+
+| Method     | 95% VaR   | 99% VaR   |
+|------------|----------:|----------:|
+| Historical | ₹131,269  | ₹203,524  |
+| Parametric | ₹133,333  | ₹188,576  |
+
+The two methods agree closely at 95%, but diverge at 99%: parametric VaR
+(₹188,576) is *lower* than historical VaR (₹203,524) at the 99% level,
+consistent with the normality assumption understating tail risk relative
+to the fatter-tailed empirical return distribution (see Limitations).
+
+**Factor model.** Regression window: 2023-08-31 to 2025-12-31, **580
+observations** — truncated from the full 743-day price window by IIMA's
+factor-data cutoff at end-2025, as documented above.
+
+| Factor | Beta    |
+|--------|--------:|
+| MF     |  0.834  |
+| SMB    | -0.335  |
+| HML    | -0.111  |
+| WML    | -0.048  |
+
+Alpha (daily): 0.000053. R²: **0.838** — the portfolio is overwhelmingly
+market-driven (beta ≈ 0.83 on MF), with modest negative tilts to size,
+value, and momentum, and a high proportion of return variance explained
+by the four factors.
+
+**Stress testing:**
+
+| Scenario                                    | P&L Impact  | VaR Breach | Worst Factor |
+|----------------------------------------------|------------:|:----------:|:------------:|
+| 2008 GFC (139 trading days)                   | -₹24,13,797 | Yes        | MF           |
+| 2020 COVID (21 trading days)                  | -₹28,29,409 | Yes        | MF           |
+| Hypothetical 3σ shock (21-day horizon)        | -₹15,51,619 | Yes        | MF           |
+
+All three scenarios breach the parametric 99% VaR (₹188,576) — expected
+and, in fact, the point of running them: a multi-week crisis move is
+naturally an order of magnitude larger than a single-day 99% VaR estimate
+drawn from a comparatively calm 3-year sample. The market factor (MF)
+dominates every scenario's loss, consistent with the portfolio's high
+market beta.
+
+**VaR backtesting.** All four VaR estimates pass the Kupiec test — no
+evidence of miscalibration over the backtest window:
+
+| Method     | Confidence | N   | Breaches | Breach Rate | Expected Rate | Kupiec LR | p-value | Reject |
+|------------|-----------:|----:|---------:|------------:|---------------:|----------:|--------:|:------:|
+| Historical | 95%        | 743 | 38       | 5.11%       | 5%             | 0.020     | 0.887   | No     |
+| Historical | 99%        | 743 | 8        | 1.08%       | 1%             | 0.043     | 0.836   | No     |
+| Parametric | 95%        | 743 | 34       | 4.58%       | 5%             | 0.289     | 0.591   | No     |
+| Parametric | 99%        | 743 | 10       | 1.35%       | 1%             | 0.810     | 0.368   | No     |
+
+This is a clean result: breach rates land close to their targets across
+both methods and both confidence levels, and Kupiec p-values (0.37-0.89)
+are all comfortably above the 0.05 rejection threshold — the data gives
+no reason to doubt either VaR method's calibration over this window. (As
+noted above, this is an in-sample backtest, so "clean" here means
+internally consistent, not validated out-of-sample.)
 
 ### Future work / production considerations
 
