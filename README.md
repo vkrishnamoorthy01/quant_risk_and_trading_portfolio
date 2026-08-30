@@ -40,6 +40,35 @@ Market (MF), Size (SMB), Value (HML), and Momentum (WML) — to decompose
 portfolio risk into systematic factor exposures versus idiosyncratic
 alpha.
 
+**Stress testing.** Three scenarios are run through the fitted factor
+betas and reported in a common P&L-impact / VaR-breach / worst-factor
+table:
+
+- **2008 GFC** (2008-09-01 to 2009-03-31: Lehman Brothers' collapse through
+  the approximate global equity market trough) and **2020 COVID crash**
+  (2020-02-20 to 2020-03-23: pre-selloff peak through the NIFTY 50's
+  trough) replay realized factor returns from the IIMA dataset over each
+  window. Daily factor returns are *summed* rather than compounded — this
+  is the aggregation consistent with the linear factor model (excess
+  return = alpha + Σ beta·factor + residual), since it preserves a clean
+  per-factor decomposition when multiplied through by the static betas.
+  It ignores compounding effects and the alpha/idiosyncratic contribution
+  to the portfolio's actual historical P&L — the reported scenario impact
+  is the portion explained by systematic factor exposure alone.
+- **Hypothetical factor shock**, calibrated statistically rather than by
+  picking arbitrary numbers: each of MF, SMB, HML, and WML is shocked by
+  **3 standard deviations of its own historical daily volatility**,
+  estimated over the same trailing 3-year window used for the VaR
+  analysis. Each factor's shock direction is chosen adverse to this
+  portfolio — opposite the sign of its estimated beta — so the scenario
+  represents a simultaneous, portfolio-unfavorable move in every factor,
+  sized to what the data says is a severe (roughly 3-sigma) but not
+  physically arbitrary move for each one.
+
+For all three scenarios, P&L impact is Σ(beta_i × shock_i) × notional, and
+a scenario is flagged as a **VaR breach** when its implied loss exceeds
+the parametric 99% VaR.
+
 ### Limitations and assumptions
 
 - **Factor exposures are as of December 2025, not live.** IIMA's daily
@@ -54,6 +83,13 @@ alpha.
 - Historical VaR is bounded by whatever regime the trailing 3-year sample
   happened to cover, and will miss tail events outside that window (which
   is exactly why stress testing is run separately against 2008 and 2020).
+- Stress scenario P&L is computed purely through factor betas (Σ beta ×
+  shock × notional). Historical scenarios sum rather than compound daily
+  factor returns (see Methodology above), and neither historical nor
+  hypothetical scenarios include the portfolio's alpha or idiosyncratic
+  (non-factor) return component — actual historical P&L in a real crash
+  would also reflect stock-specific effects the factor model doesn't
+  capture.
 
 ### Results
 
