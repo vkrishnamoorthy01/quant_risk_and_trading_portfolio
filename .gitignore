@@ -9,3 +9,4 @@ venv/
 .env
 .kite_session.json
 data/cache/
+risk_project/results/
