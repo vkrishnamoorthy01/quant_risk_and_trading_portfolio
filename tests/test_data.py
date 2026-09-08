@@ -102,12 +102,12 @@ def test_fetch_price_data_normalizes_day_candle_timestamps_for_cross_ticker_alig
     monkeypatch.setattr(data_module, "_get_instrument_token", lambda kite, ticker, exchange: {"OLD": 1, "NEW": 2}[ticker])
 
     old_vintage = [
-        {"date": "2015-02-28T09:15:00+0530", "close": 100.0},
-        {"date": "2015-03-02T09:15:00+0530", "close": 101.0},
+        {"date": "2015-03-02T09:15:00+0530", "close": 100.0},  # Monday
+        {"date": "2015-03-03T09:15:00+0530", "close": 101.0},  # Tuesday
     ]
     new_vintage = [
-        {"date": "2015-02-28T00:00:00+0530", "close": 200.0},
-        {"date": "2015-03-02T00:00:00+0530", "close": 201.0},
+        {"date": "2015-03-02T00:00:00+0530", "close": 200.0},
+        {"date": "2015-03-03T00:00:00+0530", "close": 201.0},
     ]
     monkeypatch.setattr(
         data_module,
@@ -142,3 +142,23 @@ def test_fetch_price_data_does_not_normalize_minute_interval_timestamps(monkeypa
     prices = fetch_price_data(["TCS"], "2015-01-01", "2015-12-31", interval="minute")
 
     assert len(prices) == 2
+
+
+def test_fetch_price_data_warns_but_does_not_raise_on_a_weekend_date(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A weekend date in "day" interval data is a useful tripwire for a
+    # date-alignment bug, but NOT proof of one -- NSE has held special
+    # Saturday sessions historically (e.g. 2015-02-28, a real Union
+    # Budget-day session), so this must warn, not fail the whole fetch.
+    monkeypatch.setattr(data_module.time, "sleep", lambda _: None)
+    monkeypatch.setattr(data_module, "get_kite_client", lambda: object())
+    monkeypatch.setattr(data_module, "_get_instrument_token", lambda kite, ticker, exchange: 1)
+
+    candles = [{"date": "2015-02-28T09:15:00+0530", "close": 100.0}]  # a Saturday
+    monkeypatch.setattr(
+        data_module, "_fetch_chunk", lambda kite, token, chunk_start, chunk_end, interval: pd.DataFrame(candles)
+    )
+
+    with pytest.warns(UserWarning, match="weekend"):
+        prices = fetch_price_data(["TCS"], "2015-01-01", "2015-12-31")
+
+    assert len(prices) == 1  # the weekend row is kept, not dropped
