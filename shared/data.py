@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import time
+import warnings
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Sequence
@@ -96,6 +98,28 @@ def _chunk_date_range(start: str, end: str, max_days: int = _MAX_DAY_INTERVAL_SP
     return chunks
 
 
+_REQUEST_THROTTLE_SECONDS = 0.34  # stay under Kite's historical-data rate limit (~3 req/s)
+_MAX_EXPECTED_GAP_FRACTION = 0.05  # warn if a ticker is missing more of the requested span than this
+
+
+def _fetch_chunk(kite: KiteConnect, token: int, chunk_start: str, chunk_end: str, interval: str) -> pd.DataFrame:
+    """One historical_data call, throttled and retried once if it comes back empty.
+
+    An empty response for a chunk that's well within a stock's trading
+    history is far more likely a rate-limit hiccup than genuinely missing
+    data — fetching 16 tickers x several date chunks fires enough
+    back-to-back requests to hit Kite's per-second limit, and a throttled
+    call here returns an empty list rather than raising, so it has to be
+    retried explicitly or it silently turns into missing history.
+    """
+    candles = pd.DataFrame(kite.historical_data(token, chunk_start, chunk_end, interval))
+    time.sleep(_REQUEST_THROTTLE_SECONDS)
+    if candles.empty:
+        candles = pd.DataFrame(kite.historical_data(token, chunk_start, chunk_end, interval))
+        time.sleep(_REQUEST_THROTTLE_SECONDS)
+    return candles
+
+
 def fetch_price_data(
     tickers: Sequence[str],
     start: str,
@@ -108,7 +132,12 @@ def fetch_price_data(
     A "day"-interval request spanning more than Kite's per-call limit
     (~2000 days) is transparently split into consecutive chunks and
     concatenated; other intervals are not chunked (out of scope here,
-    since nothing in this repo pulls multi-year intraday history).
+    since nothing in this repo pulls multi-year intraday history). Calls
+    are throttled and each chunk retried once on an empty response (see
+    `_fetch_chunk`), and a UserWarning is raised for any ticker still
+    missing an unusually large fraction of the requested trading days
+    afterward, so a rate-limit-induced gap fails loudly instead of
+    silently propagating into downstream results.
 
     Args:
         tickers: Exchange trading symbols, e.g. "TCS", "HDFCBANK" (no suffix).
@@ -129,8 +158,7 @@ def fetch_price_data(
     for ticker in tickers:
         token = _get_instrument_token(kite, ticker, exchange)
         chunk_frames = [
-            pd.DataFrame(kite.historical_data(token, chunk_start, chunk_end, interval))
-            for chunk_start, chunk_end in date_chunks
+            _fetch_chunk(kite, token, chunk_start, chunk_end, interval) for chunk_start, chunk_end in date_chunks
         ]
         chunk_frames = [frame for frame in chunk_frames if not frame.empty]
         if not chunk_frames:
@@ -140,7 +168,19 @@ def fetch_price_data(
         series[ticker] = candles.drop_duplicates(subset="date").set_index("date")["close"].sort_index()
 
     prices = pd.DataFrame(series)
-    return prices.dropna(how="all")
+    prices = prices.dropna(how="all")
+
+    if not prices.empty:
+        gap_fraction = prices.isna().mean()
+        for ticker, fraction in gap_fraction[gap_fraction > _MAX_EXPECTED_GAP_FRACTION].items():
+            warnings.warn(
+                f"{ticker} is missing {fraction:.0%} of the requested {start} to {end} range "
+                "even after a retry -- this is more likely a rate-limit-induced gap than "
+                "genuinely absent history; verify before trusting downstream results.",
+                stacklevel=2,
+            )
+
+    return prices
 
 
 def compute_returns(prices: pd.DataFrame, method: str = "log") -> pd.DataFrame:
