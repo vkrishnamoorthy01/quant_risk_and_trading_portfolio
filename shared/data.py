@@ -98,25 +98,29 @@ def _chunk_date_range(start: str, end: str, max_days: int = _MAX_DAY_INTERVAL_SP
     return chunks
 
 
-_REQUEST_THROTTLE_SECONDS = 0.34  # stay under Kite's historical-data rate limit (~3 req/s)
+_REQUEST_THROTTLE_SECONDS = 0.5  # baseline delay between successive historical_data calls
+_MAX_FETCH_ATTEMPTS = 4
 _MAX_EXPECTED_GAP_FRACTION = 0.05  # warn if a ticker is missing more of the requested span than this
 
 
 def _fetch_chunk(kite: KiteConnect, token: int, chunk_start: str, chunk_end: str, interval: str) -> pd.DataFrame:
-    """One historical_data call, throttled and retried once if it comes back empty.
+    """One historical_data call, throttled and retried with growing backoff if it comes back empty.
 
     An empty response for a chunk that's well within a stock's trading
     history is far more likely a rate-limit hiccup than genuinely missing
     data — fetching 16 tickers x several date chunks fires enough
     back-to-back requests to hit Kite's per-second limit, and a throttled
     call here returns an empty list rather than raising, so it has to be
-    retried explicitly or it silently turns into missing history.
+    retried explicitly or it silently turns into missing history. A single
+    quick retry wasn't enough in practice (still saw a consistent ~20% gap
+    across most tickers), so this backs off further on each attempt rather
+    than retrying once at a fixed delay.
     """
-    candles = pd.DataFrame(kite.historical_data(token, chunk_start, chunk_end, interval))
-    time.sleep(_REQUEST_THROTTLE_SECONDS)
-    if candles.empty:
+    for attempt in range(_MAX_FETCH_ATTEMPTS):
         candles = pd.DataFrame(kite.historical_data(token, chunk_start, chunk_end, interval))
-        time.sleep(_REQUEST_THROTTLE_SECONDS)
+        time.sleep(_REQUEST_THROTTLE_SECONDS * (attempt + 1))
+        if not candles.empty:
+            return candles
     return candles
 
 
@@ -133,7 +137,7 @@ def fetch_price_data(
     (~2000 days) is transparently split into consecutive chunks and
     concatenated; other intervals are not chunked (out of scope here,
     since nothing in this repo pulls multi-year intraday history). Calls
-    are throttled and each chunk retried once on an empty response (see
+    are throttled and each chunk retried with backoff on an empty response (see
     `_fetch_chunk`), and a UserWarning is raised for any ticker still
     missing an unusually large fraction of the requested trading days
     afterward, so a rate-limit-induced gap fails loudly instead of

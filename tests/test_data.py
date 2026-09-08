@@ -39,9 +39,10 @@ class _FakeKite:
         return next(self._responses)
 
 
-def test_fetch_chunk_retries_once_on_an_empty_response(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fetch_chunk_retries_with_backoff_until_a_non_empty_response(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(data_module.time, "sleep", lambda _: None)
-    kite = _FakeKite(responses=[[], [{"date": "2020-01-01", "close": 100.0}]])
+    # Empty on the first 3 attempts (within _MAX_FETCH_ATTEMPTS), succeeds on the 4th.
+    kite = _FakeKite(responses=[[], [], [], [{"date": "2020-01-01", "close": 100.0}]])
 
     result = _fetch_chunk(kite, token=1, chunk_start="2020-01-01", chunk_end="2020-01-01", interval="day")
 
@@ -49,8 +50,9 @@ def test_fetch_chunk_retries_once_on_an_empty_response(monkeypatch: pytest.Monke
     assert result.iloc[0]["close"] == 100.0
 
 
-def test_fetch_chunk_gives_up_after_one_retry() -> None:
-    kite = _FakeKite(responses=[[], []])
+def test_fetch_chunk_gives_up_after_max_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(data_module.time, "sleep", lambda _: None)
+    kite = _FakeKite(responses=[[], [], [], []])
 
     result = _fetch_chunk(kite, token=1, chunk_start="2020-01-01", chunk_end="2020-01-01", interval="day")
 
