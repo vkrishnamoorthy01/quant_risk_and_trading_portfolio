@@ -354,6 +354,24 @@ timestamp fix doesn't. `checks/check_data_completeness.py` is a fast,
 standalone sanity check on exactly this (index health, per-ticker gap
 fractions) worth running before a full walk-forward pass.
 
+One more thing the timestamp fix surfaced: `fetch_price_data` also warns
+on any weekend date in "day" interval data, since that's a cheap tripwire
+for a date-alignment bug — but it warns rather than raises, because NSE
+genuinely does trade on some weekends. After the fix, 11 weekend dates
+remained across the full history, and every one of them checks out
+against real NSE events rather than a residual bug: Union Budget day
+sessions (Feb 28 pre-2017, Feb 1 after) when the date lands on a weekend,
+Diwali "Muhurat" trading, a make-up session for the Jan 22, 2024 Ram
+Mandir holiday, and two SEBI-mandated disaster-recovery drills (Mar 2 and
+May 18, 2024, both confirmed against news coverage). Two of the eleven
+(2015-02-28, 2016-10-30) show data for only 2 of 17 tickers rather than
+all of them — consistent with thinly-traded stocks seeing zero trades
+during a short special session, not a data gap. `checks/check_data_completeness.py`
+now checks any weekend date it finds against this confirmed list
+(`KNOWN_SPECIAL_SESSIONS`) and flags anything not already on it, so a
+genuinely new alignment bug would still stand out rather than being
+lost among expected special sessions.
+
 Each out-of-sample test window is simulated as an independent,
 freshly-flat book — starting at the prior window's ending NAV rather than
 carrying open positions or stop/halt state across the train/test
