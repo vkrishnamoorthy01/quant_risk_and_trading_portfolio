@@ -317,6 +317,22 @@ full 2015-to-present history rather than the 3-year window
 say something about parameter stability rather than just demonstrate the
 mechanism on one or two.
 
+That full-history fetch surfaced a real bug during development: pulling
+16 tickers across 3 date chunks each fires 48 back-to-back
+`historical_data` calls, enough to hit Kite's rate limit. A throttled
+call returns empty instead of raising, and the original chunking code
+treated that as "no data for this chunk" — silently dropping ~25% of
+trading days, spread almost uniformly across all 16 tickers, which
+propagated three layers downstream into zero walk-forward windows and an
+opaque `pd.concat` error inside `walk_forward.py`, nowhere near the
+actual cause. Fixed in `shared/data.py` by throttling and retrying each
+call once on an empty response, plus a loud warning if a ticker is still
+missing an unusual fraction of its range afterward — a rate-limit gap
+now fails visibly at the fetch site instead of surfacing as a confusing
+error elsewhere. `checks/check_data_completeness.py` is a fast,
+standalone sanity check on exactly this (index health, per-ticker gap
+fractions) worth running before a full walk-forward pass.
+
 Each out-of-sample test window is simulated as an independent,
 freshly-flat book — starting at the prior window's ending NAV rather than
 carrying open positions or stop/halt state across the train/test
@@ -426,7 +442,11 @@ sandbox HTTP callback are the one piece that can only be verified live;
 `checks/check_sandbox_order.py` is that live smoke test, run manually
 once sandbox access is available. `checks/` holds standalone, one-off
 verification scripts like this one — not part of the pipeline itself, and
-each runnable independently of the others.
+each runnable independently of the others — including
+`check_data_completeness.py`, a fast sanity check on index health and
+per-ticker gap fractions over the full fetch, worth running before a full
+walk-forward pass rather than after one fails on bad data (see the
+rate-limit gap caught and fixed during development, above).
 
 ### Results
 
@@ -444,3 +464,8 @@ anything in this codebase).
   search, once the fixed-grid version is validated.
 - A genuine long-short/market-neutral variant of either signal, via F&O
   or SLB, as a natural extension once the long-only version is validated.
+
+*Note: this project's code, tests, and documentation were drafted with AI
+tools in the loop — Claude Code, Sonnet 5, OpenAI Codex, and GPT-6 Astra,
+among them. The modeling choices and judgment calls are mine, and so are
+the errors.*
