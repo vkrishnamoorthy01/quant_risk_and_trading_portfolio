@@ -185,6 +185,23 @@ def fetch_price_data(
     prices = pd.DataFrame(series)
     prices = prices.dropna(how="all")
 
+    if interval == "day" and not prices.empty:
+        weekend_dates = prices.index[prices.index.dayofweek >= 5]
+        if not weekend_dates.empty:
+            # NSE almost never trades on a weekend, so this is a useful
+            # tripwire for a date-alignment bug (e.g. a timestamp shifted
+            # by a day) -- but NOT a hard guarantee of one: NSE has held
+            # special live Saturday sessions historically (e.g. Union
+            # Budget day before the Budget date moved to Feb 1 in 2017),
+            # so warn rather than raise.
+            warnings.warn(
+                f"Got {len(weekend_dates)} weekend date(s) in 'day' interval data "
+                f"(first: {weekend_dates[0].date()}) -- NSE rarely trades on a weekend, "
+                "so double check this isn't a date-alignment bug (it could also be a "
+                "genuine special session, e.g. a historical Budget-day Saturday).",
+                stacklevel=2,
+            )
+
     if not prices.empty:
         gap_fraction = prices.isna().mean()
         for ticker, fraction in gap_fraction[gap_fraction > _MAX_EXPECTED_GAP_FRACTION].items():
