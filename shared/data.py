@@ -169,6 +169,17 @@ def fetch_price_data(
             continue
         candles = pd.concat(chunk_frames)
         candles["date"] = pd.to_datetime(candles["date"]).dt.tz_localize(None)
+        if interval == "day":
+            # Kite's "day" candles aren't timestamped consistently across
+            # history -- older data comes back at the market-open time
+            # (09:15 IST) rather than midnight. Left un-normalized, two
+            # tickers whose data was ingested under different conventions
+            # end up with different timestamps for what's really the same
+            # trading day, and combining them into one DataFrame creates a
+            # wall of spurious gaps instead of aligning the dates. Minute
+            # intervals must NOT be normalized this way -- that would
+            # collapse distinct intraday candles onto the same timestamp.
+            candles["date"] = candles["date"].dt.normalize()
         series[ticker] = candles.drop_duplicates(subset="date").set_index("date")["close"].sort_index()
 
     prices = pd.DataFrame(series)

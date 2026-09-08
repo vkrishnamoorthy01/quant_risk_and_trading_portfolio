@@ -317,19 +317,40 @@ full 2015-to-present history rather than the 3-year window
 say something about parameter stability rather than just demonstrate the
 mechanism on one or two.
 
-That full-history fetch surfaced a real bug during development: pulling
-16 tickers across 3 date chunks each fires 48 back-to-back
-`historical_data` calls, enough to hit Kite's rate limit. A throttled
-call returns empty instead of raising, and the original chunking code
-treated that as "no data for this chunk" — silently dropping ~25% of
-trading days, spread almost uniformly across all 16 tickers, which
-propagated three layers downstream into zero walk-forward windows and an
-opaque `pd.concat` error inside `walk_forward.py`, nowhere near the
-actual cause. Fixed in `shared/data.py` by throttling and retrying each
-call once on an empty response, plus a loud warning if a ticker is still
-missing an unusual fraction of its range afterward — a rate-limit gap
-now fails visibly at the fetch site instead of surfacing as a confusing
-error elsewhere. `checks/check_data_completeness.py` is a fast,
+That full-history fetch surfaced two real bugs during development, in
+sequence:
+
+1. **A rate-limit issue.** Pulling 16 tickers across 3 date chunks each
+   fires 48 back-to-back `historical_data` calls, enough to hit Kite's
+   rate limit; a throttled call returns empty instead of raising, and the
+   original chunking code treated that as "no data for this chunk." This
+   propagated three layers downstream into zero walk-forward windows and
+   an opaque `pd.concat` error inside `walk_forward.py`, nowhere near the
+   actual cause. Fixed in `shared/data.py` by throttling every call and
+   retrying with backoff on an empty response.
+2. **The actual root cause of the ~20% gap that remained even after fix
+   #1** (identical missing rows regardless of retry strategy — the tell
+   that it wasn't transient): Kite's "day" candles aren't timestamped
+   consistently across history. Older data comes back at market-open time
+   (09:15 IST) rather than midnight. Left un-normalized, two tickers whose
+   data was ingested under different conventions end up with different
+   timestamps for what's really the same trading day — e.g. `2015-02-28
+   09:15:00` for one ticker and `2015-02-28 00:00:00` for another — so
+   combining them creates a wall of spurious gaps rather than aligning the
+   dates. This is also why the original `check_history_depth.py` run
+   looked clean with 2 tickers: it only checked each ticker's own
+   completeness in isolation and never compared their date indices to
+   each other, so a cross-ticker misalignment wouldn't have shown up
+   until more tickers were combined. Fixed by normalizing "day" interval
+   timestamps to midnight before indexing (minute intervals are
+   deliberately left alone — normalizing those would collapse distinct
+   intraday candles onto the same timestamp).
+
+Both fixes are independently useful and both stayed in: the rate-limit
+throttle/retry is real, general-purpose defensive practice regardless of
+whether it was the cause of this particular gap, and the loud
+`UserWarning` on a residual gap (from fix #1) still catches whatever this
+timestamp fix doesn't. `checks/check_data_completeness.py` is a fast,
 standalone sanity check on exactly this (index health, per-ticker gap
 fractions) worth running before a full walk-forward pass.
 
