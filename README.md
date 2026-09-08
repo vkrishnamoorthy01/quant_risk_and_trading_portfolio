@@ -2,9 +2,13 @@
 
 Two linked projects built to demonstrate applied quant research and risk
 engineering: a portfolio risk framework (VaR, factor exposure, stress
-testing) and a systematic trading signal (momentum, walk-forward
-backtesting, live paper trading). Work in progress — `risk_project` is
-under active development; `signal_project` has not yet been started.
+testing) and a systematic trading signal (momentum and mean-reversion,
+walk-forward backtesting, live sandbox paper trading). `risk_project` is
+complete. `signal_project`'s modeling pipeline (signals, sizing, risk
+controls, backtest engine, walk-forward validation, order-translation
+logic) is built and unit-tested; the live sandbox connection and an
+actual backtest run against production data are both pending (see
+`signal_project`'s Limitations section).
 
 ## risk_project
 
@@ -221,4 +225,209 @@ internally consistent, not validated out-of-sample.)
 
 ## signal_project
 
-Not yet started.
+### Problem statement
+
+Build two independent, per-stock time-series trading signals (momentum and
+mean-reversion) on the same ₹1 crore, 16-stock NSE universe used in
+`risk_project`, run them as two parallel ₹50 lakh books with
+volatility-scaled position sizing, validate signal-parameter choices via
+rolling walk-forward testing, and execute live paper trades through Kite
+Connect's sandbox.
+
+### Methodology
+
+**Universe, notional, and book structure.** Same 16-stock universe as
+`risk_project`. The ₹1 crore total notional is split 50/50 into two
+independently-run books — momentum and mean-reversion — that both trade
+all 16 stocks independently: a stock can carry a position in one book,
+both, or neither, purely on what each book's own signal says.
+
+**Time-series, not cross-sectional, signals.** Both signals are computed
+per-stock (each stock's own trend/reversion state), not as a
+cross-sectional ranking (long top decile / short bottom decile) across
+the universe. Sixteen names is too thin a cross-section for a
+ranking-based long-short spread to be statistically meaningful, and
+per-stock signals map directly onto the per-instrument orders execution
+needs.
+
+**Signal definitions.** Both follow the standard sign-based time-series
+convention (position = sign of trailing return), restricted to long-only
+by dropping the short leg:
+
+- **Momentum** (`signal_project/signals.py::momentum_signal`): long a
+  stock while its trailing return over the lookback is positive.
+  Candidate lookbacks: 3, 6, 9, 12 months. Rebalanced weekly.
+- **Mean-reversion** (`momentum_signal`'s contrarian counterpart,
+  `mean_reversion_signal`): long a stock while its trailing return over
+  the lookback is *negative* (expecting reversion), i.e. the sign-flipped
+  version of the same rule. Candidate lookbacks: 3, 5, 10 trading days.
+  Rebalanced daily.
+
+**Long-only, both signals.** A "sell" signal exits an existing long back
+to flat and never opens a new short. This is driven by execution
+reality, not a strategy preference: NSE cash-segment delivery trades
+cannot carry an overnight short. Long-only momentum and long-only
+reversal are consequently different from their canonical
+long-short/market-neutral counterparts in the literature — those hedge
+out general market exposure to isolate the pure factor, while these
+long-only books inherit market beta (see Limitations).
+
+**Position sizing** (`signal_project/sizing.py`). Inverse-volatility
+weighting within each book: lower-vol stocks get larger positions,
+higher-vol stocks smaller, for a given signal strength, using trailing
+20-day realized vol refreshed at every rebalance. This is a separate,
+continuously-updated calculation, not part of the walk-forward parameter
+search below.
+
+*Position cap:* each stock is capped at 17.5% of that book's capital
+(~2.8x its 6.25% equal-weight share at 16 stocks), so the signal's
+selection effect and the vol-scaling effect can't compound into a
+concentrated bet on a handful of low-vol names. Mechanically: compute
+inverse-vol weights, clip anything above the cap, and redistribute the
+clipped excess proportionally across the remaining uncapped names —
+iteratively, since redistributing excess can itself push a previously
+uncapped name over the cap. A name that hits the cap is locked there for
+the rest of that redistribution (without the lock, weight can cycle back
+onto an already-capped name and never converge — caught by a unit test
+before it became a live bug). If every active name in a book ends up
+locked at the cap simultaneously (few active names, low cap), the book
+is left partially in cash rather than breaching the cap — the cap is a
+concentration control and takes priority over full investment in that
+edge case.
+
+**Walk-forward validation** (`signal_project/walk_forward.py`). Tests
+whether the "best" lookback for each signal is stable across time or an
+artifact of a particular window:
+
+| Parameter | Value |
+|---|---|
+| Training window length | 24 months, rolling (not expanding) |
+| Test window / step size | 6 months |
+| Selection process | Evaluate every candidate lookback in-sample on Sharpe ratio over the training window; freeze the winner; apply it unchanged over the following 6-month out-of-sample test window |
+| Roll forward | Slide the training window forward by 6 months; repeat |
+
+Each out-of-sample test window is simulated as an independent,
+freshly-flat book — starting at the prior window's ending NAV rather than
+carrying open positions or stop/halt state across the train/test
+boundary — so windows can be evaluated and stitched into one continuous
+OOS equity curve independently of each other. This is a deliberate
+simplification (see Limitations), not an attempt to replicate exactly
+what a continuously-running book would have done across window
+boundaries.
+
+**Risk controls** (`signal_project/risk_controls.py`), both reusing
+estimates the rest of the pipeline already computes rather than
+introducing disconnected parameters:
+
+- *Per-position stop-loss:* vol-scaled, not a flat percentage — exit a
+  position if it moves against the entry price by more than 2 standard
+  deviations of the same trailing 20-day realized vol used for sizing,
+  fixed at the vol estimate observed when the position was opened.
+  Checked every day regardless of the signal's own rebalance frequency,
+  so a weekly-rebalanced momentum position can still be stopped out
+  intraweek.
+- *Book-level drawdown halt:* pause new entries in a book once its NAV
+  drawdown from peak exceeds 15%; resume once drawdown recovers to 10% or
+  better. Existing positions are not force-liquidated — the halt blocks
+  new entries only. "New entry" is interpreted here as opening a position
+  in a ticker currently at zero weight; resizing or exiting an existing
+  position is unaffected by the halt.
+
+**Execution: Kite Connect sandbox paper trading**
+(`signal_project/execution.py`). Two independent, separately-authenticated
+Kite clients are used across the project: `shared.data.get_kite_client()`
+against production (`api.kite.trade`) for historical data, and
+`get_sandbox_kite_client()` against the sandbox (`sandbox.kite.trade`) for
+order placement — a design constraint from the spec, kept even though the
+sandbox uses shared public demo credentials (`sandboxdemo` /
+`sandboxdemo-secret`, published by Zerodha as safe to use in plain text)
+rather than a personal registered app. The sandbox client requires an
+`/oms` prefix patched onto every SDK route except the instrument dumps,
+and only accepts resting `LIMIT` orders — no `MARKET` order type, and an
+order priced too far from LTP is auto-rejected by the exchange price-band
+check. `execution.py` prices every order a small, explicit margin off the
+latest quote (BUY below LTP, SELL above) to stay inside that band, and
+enforces long-only at the order-translation level: a reduction never
+sells more shares than are currently held, since there is no short leg to
+open.
+
+### Limitations and assumptions
+
+- **Small candidate grids.** Four candidates for momentum and three for
+  mean-reversion are enough to demonstrate the walk-forward mechanism
+  working, but window-to-window "winner changes" will partly reflect
+  estimation noise rather than genuine regime change, especially for
+  momentum at roughly 26 weekly observations per 6-month test window.
+  Read the walk-forward results in the Results section below with that in
+  mind, rather than over-claiming a parameter-stability finding.
+- **In-sample selection, frozen out-of-sample application** reduces but
+  does not eliminate overfitting risk — the selection step itself is
+  still an in-sample choice, just not re-touched during the test window.
+- **Each out-of-sample test window restarts flat**, rather than carrying
+  a continuously-running book's open positions and stop/halt state across
+  the train/test boundary (see Methodology). This keeps windows
+  independently evaluable and stitchable, at the cost of not exactly
+  reproducing what one continuously-running book would have experienced.
+- **Long-only inherits market beta.** Because both books are long-only
+  (execution-constrained, not a design choice), reported returns are not
+  purely attributable to the signal; a rising market over the backtest
+  period lifts both books regardless of signal quality. The Results
+  section below reports the NIFTY 50's return over the same out-of-sample
+  window alongside each book's result for this reason.
+- **Live paper-trading execution risk** (API stability, order rejects,
+  corporate actions/dividends over an extended history) is a different
+  risk category from a pure backtest.
+- **Sandbox IP-allowlisting is unconfirmed.** Kite's sandbox
+  documentation does not state whether the static-IP allowlisting
+  required for production order placement also applies to
+  `sandbox.kite.trade`. `execution.py` and `check_sandbox_order.py` were
+  built and tested (via a mocked Kite client — see Testing) without a
+  live sandbox connection, because sandbox login access was blocked by a
+  Zerodha helpdesk ticket during development. Whether IP allowlisting
+  applies, and whether the order-placement flow works end-to-end against
+  the real sandbox, is confirmed by running `check_sandbox_order.py` once
+  access clears, not by anything in this codebase today.
+- **No live-runner reconciliation script.** `execution.py` provides the
+  tested order-translation and sandbox-client primitives (diff target
+  weights against current holdings into long-only LIMIT orders), but a
+  daily/weekly script that pulls real sandbox positions and NAV,
+  reconciles them against the frozen walk-forward lookback's live signal,
+  and calls `execution.py` to act was deliberately not built yet. Writing
+  that reconciliation logic against `kite.positions()` / `kite.margins()`
+  response shapes we have never actually observed (sandbox access being
+  blocked) risks encoding wrong assumptions about the sandbox's own P&L
+  accounting; it belongs after the first successful `check_sandbox_order.py`
+  run, not before.
+- Two independently-sized books sharing one notional pool means combined
+  portfolio-level risk (e.g., correlation between the two books' P&L) is
+  not addressed here — a natural extension linking back to `risk_project`.
+
+### Testing
+
+Signals, sizing (including the cap-redistribution edge cases), risk
+controls, the day-by-day backtest engine, walk-forward window generation
+and selection, and order-translation logic are covered by unit tests on
+synthetic data (`tests/test_signals.py`, `test_sizing.py`,
+`test_risk_controls.py`, `test_backtest.py`, `test_walk_forward.py`,
+`test_execution.py`) — none of them hit live Kite, matching
+`risk_project`'s testing convention. `get_sandbox_kite_client()` and the
+sandbox HTTP callback are the one piece that can only be verified live;
+`check_sandbox_order.py` at the repo root is that live smoke test, run
+manually once sandbox access is available.
+
+### Results
+
+Pending an actual `python -m signal_project.run_backtest` run against
+production Kite data (blocked on the same-day interactive login, not on
+anything in this codebase).
+
+### Future work
+
+- The live-runner reconciliation script described in Limitations, once
+  the sandbox connection is confirmed working.
+- Combined-book risk view linking `signal_project`'s two books back to
+  `risk_project`'s factor/VaR framework.
+- Extend beyond the fixed candidate grids to a continuous parameter
+  search, once the fixed-grid version is validated.
+- A genuine long-short/market-neutral variant of either signal, via F&O
+  or SLB, as a natural extension once the long-only version is validated.
