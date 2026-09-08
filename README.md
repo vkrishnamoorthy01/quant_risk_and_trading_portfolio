@@ -306,6 +306,17 @@ artifact of a particular window:
 | Selection process | Evaluate every candidate lookback in-sample on Sharpe ratio over the training window; freeze the winner; apply it unchanged over the following 6-month out-of-sample test window |
 | Roll forward | Slide the training window forward by 6 months; repeat |
 
+The spec flagged a risk here: 24-month train + 6-month step needs
+meaningfully more than 2.5-3 years of history to produce more than one or
+two windows. `checks/check_history_depth.py` (a standalone, one-off
+script, not part of the pipeline) confirmed production Kite actually
+gives clean daily history back to **2015-01-01** — about 11.7 years, no
+gaps beyond ordinary weekends/holidays — so `run_backtest.py` uses the
+full 2015-to-present history rather than the 3-year window
+`risk_project` uses for VaR. That's roughly 19 rolling windows, enough to
+say something about parameter stability rather than just demonstrate the
+mechanism on one or two.
+
 Each out-of-sample test window is simulated as an independent,
 freshly-flat book — starting at the prior window's ending NAV rather than
 carrying open positions or stop/halt state across the train/test
@@ -412,8 +423,10 @@ synthetic data (`tests/test_signals.py`, `test_sizing.py`,
 `test_execution.py`) — none of them hit live Kite, matching
 `risk_project`'s testing convention. `get_sandbox_kite_client()` and the
 sandbox HTTP callback are the one piece that can only be verified live;
-`check_sandbox_order.py` at the repo root is that live smoke test, run
-manually once sandbox access is available.
+`checks/check_sandbox_order.py` is that live smoke test, run manually
+once sandbox access is available. `checks/` holds standalone, one-off
+verification scripts like this one — not part of the pipeline itself, and
+each runnable independently of the others.
 
 ### Results
 

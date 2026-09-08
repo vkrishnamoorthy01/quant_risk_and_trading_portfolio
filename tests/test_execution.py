@@ -2,7 +2,7 @@
 
 Covers only the pure order-translation logic. Authentication and the
 sandbox HTTP callback (get_sandbox_kite_client) require a live interactive
-login and are deliberately not exercised here — see check_sandbox_order.py
+login and are deliberately not exercised here — see checks/check_sandbox_order.py
 for the live smoke test, run manually.
 """
 
