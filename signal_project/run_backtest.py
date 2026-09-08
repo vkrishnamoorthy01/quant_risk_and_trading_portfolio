@@ -18,6 +18,11 @@ from pathlib import Path
 
 import pandas as pd
 
+import os
+
+os.chdir(r"D:\Personal_projects\quant_risk_and_trading_portfolio")
+
+
 from signal_project.portfolio import MEAN_REVERSION_BOOK, MOMENTUM_BOOK
 from signal_project.signals import mean_reversion_signal, momentum_signal
 from signal_project.walk_forward import run_walk_forward, sharpe_ratio, winner_change_rate
