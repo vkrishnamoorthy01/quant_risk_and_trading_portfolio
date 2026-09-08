@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Sequence
 
@@ -81,6 +81,21 @@ def _get_instrument_token(kite: KiteConnect, tradingsymbol: str, exchange: str =
     return int(match.iloc[0]["instrument_token"])
 
 
+_MAX_DAY_INTERVAL_SPAN = 1900  # Kite's "day" interval historical_data call rejects spans over ~2000 days
+
+
+def _chunk_date_range(start: str, end: str, max_days: int = _MAX_DAY_INTERVAL_SPAN) -> list[tuple[str, str]]:
+    """Split [start, end] into <=max_days-long (start, end) chunks, both "YYYY-MM-DD"."""
+    chunk_start = date.fromisoformat(start)
+    end_date = date.fromisoformat(end)
+    chunks = []
+    while chunk_start <= end_date:
+        chunk_end = min(chunk_start + timedelta(days=max_days), end_date)
+        chunks.append((chunk_start.isoformat(), chunk_end.isoformat()))
+        chunk_start = chunk_end + timedelta(days=1)
+    return chunks
+
+
 def fetch_price_data(
     tickers: Sequence[str],
     start: str,
@@ -89,6 +104,11 @@ def fetch_price_data(
     exchange: str = "NSE",
 ) -> pd.DataFrame:
     """Download close prices for a list of tradingsymbols via Kite Connect.
+
+    A "day"-interval request spanning more than Kite's per-call limit
+    (~2000 days) is transparently split into consecutive chunks and
+    concatenated; other intervals are not chunked (out of scope here,
+    since nothing in this repo pulls multi-year intraday history).
 
     Args:
         tickers: Exchange trading symbols, e.g. "TCS", "HDFCBANK" (no suffix).
@@ -103,14 +123,21 @@ def fetch_price_data(
         DataFrame of close prices, indexed by date, one column per ticker.
     """
     kite = get_kite_client()
+    date_chunks = _chunk_date_range(start, end) if interval == "day" else [(start, end)]
+
     series = {}
     for ticker in tickers:
         token = _get_instrument_token(kite, ticker, exchange)
-        candles = pd.DataFrame(kite.historical_data(token, start, end, interval))
-        if candles.empty:
+        chunk_frames = [
+            pd.DataFrame(kite.historical_data(token, chunk_start, chunk_end, interval))
+            for chunk_start, chunk_end in date_chunks
+        ]
+        chunk_frames = [frame for frame in chunk_frames if not frame.empty]
+        if not chunk_frames:
             continue
+        candles = pd.concat(chunk_frames)
         candles["date"] = pd.to_datetime(candles["date"]).dt.tz_localize(None)
-        series[ticker] = candles.set_index("date")["close"]
+        series[ticker] = candles.drop_duplicates(subset="date").set_index("date")["close"].sort_index()
 
     prices = pd.DataFrame(series)
     return prices.dropna(how="all")
