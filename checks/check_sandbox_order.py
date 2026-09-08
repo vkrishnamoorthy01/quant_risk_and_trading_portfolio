@@ -1,7 +1,7 @@
 """One-off check: does a paper order actually go through on sandbox.kite.trade?
 
 Run from anywhere with the repo's venv active:
-    python check_sandbox_order.py
+    python checks/check_sandbox_order.py
 
 What it does, end to end, in isolation from the rest of the codebase:
   1. Prints a sandbox login URL and starts a tiny local HTTP server on
