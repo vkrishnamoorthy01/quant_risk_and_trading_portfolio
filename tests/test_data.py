@@ -86,3 +86,59 @@ def test_fetch_price_data_warns_when_a_ticker_is_missing_most_of_its_history(
 
     assert "BAD" in prices.columns
     assert prices["BAD"].isna().mean() > 0.5
+
+
+def test_fetch_price_data_normalizes_day_candle_timestamps_for_cross_ticker_alignment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Reproduces the real bug: Kite's older "day" candles come back
+    # timestamped at market-open (09:15 IST) rather than midnight. Two
+    # tickers on the same trading days, one at each convention -- without
+    # normalizing away the time-of-day, these look like 4 distinct dates
+    # instead of 2 shared ones, and each ticker shows spurious gaps on the
+    # other's timestamps.
+    monkeypatch.setattr(data_module.time, "sleep", lambda _: None)
+    monkeypatch.setattr(data_module, "get_kite_client", lambda: object())
+    monkeypatch.setattr(data_module, "_get_instrument_token", lambda kite, ticker, exchange: {"OLD": 1, "NEW": 2}[ticker])
+
+    old_vintage = [
+        {"date": "2015-02-28T09:15:00+0530", "close": 100.0},
+        {"date": "2015-03-02T09:15:00+0530", "close": 101.0},
+    ]
+    new_vintage = [
+        {"date": "2015-02-28T00:00:00+0530", "close": 200.0},
+        {"date": "2015-03-02T00:00:00+0530", "close": 201.0},
+    ]
+    monkeypatch.setattr(
+        data_module,
+        "_fetch_chunk",
+        lambda kite, token, chunk_start, chunk_end, interval: pd.DataFrame(
+            old_vintage if token == 1 else new_vintage
+        ),
+    )
+
+    prices = fetch_price_data(["OLD", "NEW"], "2015-01-01", "2015-12-31")
+
+    assert len(prices) == 2  # both trading days align into 2 rows, not 4
+    assert prices["OLD"].isna().sum() == 0
+    assert prices["NEW"].isna().sum() == 0
+
+
+def test_fetch_price_data_does_not_normalize_minute_interval_timestamps(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Normalizing intraday candles the same way would collapse distinct
+    # minute bars onto the same timestamp -- must only apply to "day".
+    monkeypatch.setattr(data_module.time, "sleep", lambda _: None)
+    monkeypatch.setattr(data_module, "get_kite_client", lambda: object())
+    monkeypatch.setattr(data_module, "_get_instrument_token", lambda kite, ticker, exchange: 1)
+
+    intraday = [
+        {"date": "2015-02-28T09:15:00+0530", "close": 100.0},
+        {"date": "2015-02-28T09:16:00+0530", "close": 101.0},
+    ]
+    monkeypatch.setattr(
+        data_module, "_fetch_chunk", lambda kite, token, chunk_start, chunk_end, interval: pd.DataFrame(intraday)
+    )
+
+    prices = fetch_price_data(["TCS"], "2015-01-01", "2015-12-31", interval="minute")
+
+    assert len(prices) == 2
