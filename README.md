@@ -6,8 +6,9 @@ testing) and a systematic trading signal (momentum and mean-reversion,
 walk-forward backtesting, live sandbox paper trading). `risk_project` is
 complete. `signal_project`'s modeling pipeline (signals, sizing, risk
 controls, backtest engine, walk-forward validation, order-translation
-logic) is built and unit-tested; the live sandbox connection and an
-actual backtest run against production data are both pending (see
+logic) is built, unit-tested, and has produced real walk-forward results
+against production Kite data (see `signal_project`'s Results section);
+the live sandbox execution connection is still pending (see
 `signal_project`'s Limitations section).
 
 ## risk_project
@@ -489,9 +490,51 @@ rate-limit gap caught and fixed during development, above).
 
 ### Results
 
-Pending an actual `python -m signal_project.run_backtest` run against
-production Kite data (blocked on the same-day interactive login, not on
-anything in this codebase).
+Produced by `python -m signal_project.run_backtest` on 2026-09-08, over
+the stitched out-of-sample walk-forward window 2017-01-03 to 2026-09-08
+(20 rolling 6-month test windows per book, from a 24-month train / 6-month
+step schedule against full 2015-to-present history).
+
+| Book | Ending NAV (from ₹50L) | Total return | Annualized Sharpe (OOS) |
+|---|---:|---:|---:|
+| Momentum (weekly) | ₹1,66,06,066 | 232.12% | 1.07 |
+| Mean-reversion (daily) | ₹1,01,85,844 | 103.72% | 0.61 |
+
+**Market context.** NIFTY 50 returned **188.69%** over the identical
+2017-01-03 to 2026-09-08 window. Since both books are long-only and
+execution-constrained (see Methodology/Limitations — they inherit market
+beta by construction), this comparison is essential, not a footnote:
+momentum (232%) modestly outperformed the index over this ~9.7-year
+window, while mean-reversion (104%) meaningfully underperformed it. A
+plausible read is that most of momentum's edge over the benchmark is
+attributable to actual stock selection, while mean-reversion's shortfall
+is largely just a weaker-than-market book riding the same rising tide —
+but attributing exactly how much of either result is signal versus market
+beta would need a proper factor decomposition (the natural link back to
+`risk_project`, noted in Future Work), not just the raw return comparison
+here.
+
+**Walk-forward parameter (in)stability.** Both signals show real
+instability, exactly the kind of finding this exercise exists to surface
+rather than explain away:
+
+| Signal | Winner changed between windows | Most-selected lookback | Selection distribution (of 20 windows) |
+|---|---:|---:|---|
+| Momentum | 37% | 12 months | 12mo: 14, 9mo: 4, 6mo: 1, 3mo: 1 |
+| Mean-reversion | 37% | 5 days | 5d: 11, 3d: 7, 10d: 2 |
+
+Both signals settle on the same winner in roughly two-thirds of
+consecutive windows and switch in the rest — a meaningful amount of
+switching for only 20 windows and 4-candidate (momentum) / 3-candidate
+(mean-reversion) grids, consistent with the spec's flagged risk that
+window-to-window instability at this grid size partly reflects estimation
+noise rather than a genuine, identifiable regime change. Momentum's
+selection is dominated by the *longest* candidate lookback (12 months),
+and mean-reversion's by the *shortest* non-trivial one (5 days) — a
+directionally sensible split (long-run trend vs. short-run reversion),
+but with only 4 and 3 candidates respectively, this is a suggestive
+pattern to state plainly, not a statistically powerful finding to lean
+on.
 
 ### Future work
 
