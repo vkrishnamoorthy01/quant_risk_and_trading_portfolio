@@ -26,22 +26,22 @@ past and hypothetical crises (stress testing)?
 different tradeoffs:
 
 - **Historical VaR** takes the empirical quantile of realized portfolio
-  returns directly. It makes no distributional assumption, but is only as
-  informative as the historical sample — a calm 3-year window will
+  returns directly. It makes no distributional assumption, and is as
+  informative as the historical sample used. So a calm 3-year window will
   understate tail risk.
 - **Parametric (variance-covariance) VaR** assumes portfolio returns are
   normally distributed and derives portfolio variance from the asset
   covariance matrix and portfolio weights (`w' Σ w`), scaled by the normal
   quantile for the target confidence level. This is fast and smooth, but
-  understates risk when actual return distributions are fat-tailed —
-  common in equity markets, especially during stress.
+  understates risk when actual return distributions are fat-tailed -
+  commonly seen in equity markets, especially during stress.
 
 Both are computed at 95% and 99% confidence over a trailing 3-year daily
 return window.
 
 **Factor model.** Portfolio excess returns (return minus the risk-free
-rate) are regressed via OLS on IIMA's daily Fama-French-India factors —
-Market (MF), Size (SMB), Value (HML), and Momentum (WML) — to decompose
+rate) are regressed via OLS on IIMA's daily Fama-French-India factors -
+Market (MF), Size (SMB), Value (HML), and Momentum (WML) - to decompose
 portfolio risk into systematic factor exposures versus idiosyncratic
 alpha.
 
@@ -53,7 +53,7 @@ table:
   the approximate global equity market trough) and **2020 COVID crash**
   (2020-02-20 to 2020-03-23: pre-selloff peak through the NIFTY 50's
   trough) replay realized factor returns from the IIMA dataset over each
-  window. Daily factor returns are *summed* rather than compounded — this
+  window. Daily factor returns are *summed* rather than compounded - this
   is the aggregation consistent with the linear factor model (excess
   return = alpha + Σ beta·factor + residual), since it preserves a clean
   per-factor decomposition when multiplied through by the static betas.
@@ -65,10 +65,10 @@ table:
   is shocked by **3 standard deviations of its own historical daily
   volatility**, estimated over the same trailing 3-year window used for
   the VaR analysis, then scaled to a cumulative 21-trading-day
-  (~1-month) move via sqrt-time scaling (`daily_std * sqrt(21)`) —
+  (~1-month) move via sqrt-time scaling (`daily_std * sqrt(21)`) -
   consistent with the summed, not compounded, aggregation used for the
   historical scenarios above. Each factor's shock direction is adverse to
-  this portfolio — opposite the sign of its estimated beta. The 21-day
+  this portfolio - opposite the sign of its estimated beta. The 21-day
   horizon was chosen to match the COVID window's length, so that scenario
   is horizon-comparable; **the GFC window is 139 trading days (~6.5
   months) and is a longer, structurally different sustained-drawdown
@@ -89,10 +89,10 @@ read as horizon-specific rather than directly ranked against each other.
 and 99%) is checked against the same trailing 3-year window's realized
 daily returns:
 
-- **Breach count / breach rate** — the fraction of days where the realized
+- **Breach count / breach rate** - the fraction of days where the realized
   loss exceeded the VaR estimate, compared against the rate the model
   targets (5% for 95% VaR, 1% for 99% VaR).
-- **Kupiec's proportion-of-failures (POF) test** — a likelihood-ratio test
+- **Kupiec's proportion-of-failures (POF) test** - a likelihood-ratio test
   of whether the observed breach rate is statistically consistent with the
   target rate. The statistic is asymptotically χ² with 1 degree of
   freedom under the null hypothesis that the model is correctly
@@ -104,8 +104,8 @@ daily returns:
   distinguishable from the target — the test finds no evidence the model
   is miscalibrated, which is a pass, not proof the model is correct.
 
-This is an **in-sample** backtest — the VaR estimate and the returns it's
-tested against cover the same window — rather than a rolling
+This is an **in-sample** backtest - the VaR estimate and the returns it's
+tested against cover the same window - rather than a rolling
 out-of-sample comparison (see Limitations).
 
 ### Limitations and assumptions
@@ -159,7 +159,7 @@ consistent with the normality assumption understating tail risk relative
 to the fatter-tailed empirical return distribution (see Limitations).
 
 **Factor model.** Regression window: 2023-08-31 to 2025-12-31, **580
-observations** — truncated from the full 743-day price window by IIMA's
+observations** - truncated from the full 743-day price window by IIMA's
 factor-data cutoff at end-2025, as documented above.
 
 | Factor | Beta    |
@@ -169,7 +169,7 @@ factor-data cutoff at end-2025, as documented above.
 | HML    | -0.111  |
 | WML    | -0.048  |
 
-Alpha (daily): 0.000053. R²: **0.838** — the portfolio is overwhelmingly
+Alpha (daily): 0.000053. R²: **0.838** - the portfolio is overwhelmingly
 market-driven (beta ≈ 0.83 on MF), with modest negative tilts to size,
 value, and momentum, and a high proportion of return variance explained
 by the four factors.
@@ -189,7 +189,7 @@ drawn from a comparatively calm 3-year sample. The market factor (MF)
 dominates every scenario's loss, consistent with the portfolio's high
 market beta.
 
-**VaR backtesting.** All four VaR estimates pass the Kupiec test — no
+**VaR backtesting.** All four VaR estimates pass the Kupiec test - no
 evidence of miscalibration over the backtest window:
 
 | Method     | Confidence | N   | Breaches | Breach Rate | Expected Rate | Kupiec LR | p-value | Reject |
@@ -212,8 +212,8 @@ internally consistent, not validated out-of-sample.)
   (Foujdar, Juneja, Kumar, Prabhala, 2026; Ashoka University) provides a
   five-factor monthly dataset (adds RMW and CMA to SMB/HML/WML, plus a
   market factor and risk-free rate) with coverage through May 2026. It has
-  not been wired into `factor_model.py` — it's a different frequency
-  (monthly vs. daily) and factor set from the primary IIMA model — but is a
+  not been wired into `factor_model.py` - it's a different frequency
+  (monthly vs. daily) and factor set from the primary IIMA model - but is a
   natural candidate for a monthly robustness check on factor loadings, and
   usefully extends coverage past IIMA's Dec-2025 cutoff.
 - Refresh the factor regression as IIMA (or an equivalent daily source)
@@ -239,7 +239,7 @@ Connect's sandbox.
 
 **Universe, notional, and book structure.** Same 16-stock universe as
 `risk_project`. The ₹1 crore total notional is split 50/50 into two
-independently-run books — momentum and mean-reversion — that both trade
+independently-run books - momentum and mean-reversion - that both trade
 all 16 stocks independently: a stock can carry a position in one book,
 both, or neither, purely on what each book's own signal says.
 
@@ -269,7 +269,7 @@ to flat and never opens a new short. This is driven by execution
 reality, not a strategy preference: NSE cash-segment delivery trades
 cannot carry an overnight short. Long-only momentum and long-only
 reversal are consequently different from their canonical
-long-short/market-neutral counterparts in the literature — those hedge
+long-short/market-neutral counterparts in the literature - those hedge
 out general market exposure to isolate the pure factor, while these
 long-only books inherit market beta (see Limitations).
 
