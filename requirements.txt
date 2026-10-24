@@ -6,3 +6,5 @@ kiteconnect
 python-dotenv
 matplotlib
 pytest
+ib_async
+pyarrow
