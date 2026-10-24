@@ -4,16 +4,24 @@ section.
 
 Run this yourself from the repo root:
 
-    python -m risk_project.run_report
+    python -m risk_project.run_report                        # Kite Connect (default)
+    python -m risk_project.run_report --source ibkr_paper    # IBKR, paper TWS (port 7497)
+    python -m risk_project.run_report --source ibkr_live     # IBKR, live TWS (port 7496)
 
 The first Kite Connect call each day needs an interactive login: it prints
 a login URL, and after you log in and get redirected, you paste back the
 `request_token` from the redirect URL when prompted. The access token is
 then cached for the rest of the day (see shared/data.py).
+
+With an IBKR source, prices come from data_providers.ibkr_prices (that TWS
+must be running; already-downloaded bars are reused from data/cache/ibkr/),
+and the CSVs are written with an "_ibkr_paper" or "_ibkr_live" suffix so the
+Kite reports are never overwritten.
 """
 
 from __future__ import annotations
 
+from argparse import ArgumentParser
 from pathlib import Path
 
 import pandas as pd
@@ -44,11 +52,33 @@ def _var_window() -> tuple[str, str]:
     return start.date().isoformat(), end.date().isoformat()
 
 
-def main() -> None:
+PRICE_SOURCES = ("kite", "ibkr_paper", "ibkr_live")
+
+
+def _fetch_prices(source: str, start: str, end: str) -> pd.DataFrame:
+    """Close prices for PORTFOLIO.tickers from the chosen source, in fetch_price_data's format."""
+    if source not in PRICE_SOURCES:
+        raise ValueError(f"Unknown price source {source!r}; use one of {PRICE_SOURCES}.")
+    if source == "kite":
+        print(f"Fetching {len(PORTFOLIO.tickers)} tickers from {start} to {end} via Kite Connect...")
+        return fetch_price_data(PORTFOLIO.tickers, start, end)
+    # Imported here so the default Kite run doesn't need ib_async installed.
+    from data_providers.ibkr_prices import fetch_ibkr_price_data
+
+    environment = source.removeprefix("ibkr_")
+    print(f"Fetching {len(PORTFOLIO.tickers)} tickers from {start} to {end} via IBKR ({environment})...")
+    return fetch_ibkr_price_data(PORTFOLIO.tickers, start, end, environment=environment)
+
+
+def _results_suffix(source: str) -> str:
+    """File-name suffix: empty for Kite (the original names), "_ibkr_paper" or "_ibkr_live" for IBKR."""
+    return "" if source == "kite" else f"_{source}"
+
+
+def main(source: str = "kite") -> None:
     start, end = _var_window()
 
-    print(f"Fetching {len(PORTFOLIO.tickers)} tickers from {start} to {end} via Kite Connect...")
-    prices = fetch_price_data(PORTFOLIO.tickers, start, end)
+    prices = _fetch_prices(source, start, end)
 
     # Simple (not log) returns: portfolio return = weighted sum of asset
     # returns only holds exactly for simple returns.
@@ -110,10 +140,16 @@ def main() -> None:
     print(backtest_report.to_string())
 
     RESULTS_DIR.mkdir(exist_ok=True)
-    scenario_report.to_csv(RESULTS_DIR / "scenario_report.csv")
-    backtest_report.to_csv(RESULTS_DIR / "backtest_report.csv")
-    print(f"\nSaved scenario_report.csv and backtest_report.csv to {RESULTS_DIR}")
+    suffix = _results_suffix(source)
+    scenario_path = RESULTS_DIR / f"scenario_report{suffix}.csv"
+    backtest_path = RESULTS_DIR / f"backtest_report{suffix}.csv"
+    scenario_report.to_csv(scenario_path)
+    backtest_report.to_csv(backtest_path)
+    print(f"\nSaved {scenario_path.name} and {backtest_path.name} to {RESULTS_DIR}")
 
 
 if __name__ == "__main__":
-    main()
+    parser = ArgumentParser(description="End-to-end risk report.")
+    parser.add_argument("--source", choices=PRICE_SOURCES, default="kite", help="price source (default: kite)")
+    args = parser.parse_args()
+    main(source=args.source)
