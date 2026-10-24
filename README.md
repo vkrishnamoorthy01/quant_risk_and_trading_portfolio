@@ -9,7 +9,9 @@ controls, backtest engine, walk-forward validation, order-translation
 logic) is built, unit-tested, and has produced real walk-forward results
 against production Kite data (see `signal_project`'s Results section);
 the live sandbox execution connection is still pending (see
-`signal_project`'s Limitations section).
+`signal_project`'s Limitations section). `data_providers` adds Interactive
+Brokers as a second historical data source next to Kite, selectable in
+`risk_project`'s report (see its section below).
 
 ## risk_project
 
@@ -546,6 +548,167 @@ on.
   search, once the fixed-grid version is validated.
 - A genuine long-short/market-neutral variant of either signal, via F&O
   or SLB, as a natural extension once the long-only version is validated.
+
+## data_providers (Interactive Brokers)
+
+### Problem statement
+
+Add Interactive Brokers (IBKR) as a second, independent source of
+historical NSE prices alongside Kite Connect, so `risk_project` can run
+on either. Kite stays the default, and its code (`shared/data.py`) is
+unchanged. This is market data only: nothing here places, modifies, or
+cancels orders.
+
+### Methodology
+
+**Connection.** `data_providers/ibkr_connection.py` connects to TWS
+through `ib_async`, read-only, defaulting to paper (port 7497; live is
+7496). Once connected, it checks the account IDs TWS reports against the
+requested environment (IB paper accounts start with "D") and refuses to
+go on if they don't match. There is no fallback between paper and live.
+`readonly=True` only stops `ib_async` from requesting order state; it is
+not enforced by the broker, so the real safeguard is TWS's Read-Only API
+setting, which stays on. Ports, client ID, and timeout can be overridden
+with optional `IBKR_*` variables (see `.env.example`). TWS handles the
+login, so no credentials are stored.
+
+**Historical bars.** `ibkr_provider.py` downloads daily and 5-minute
+bars. Long ranges are split into chunks (365 days for daily, 7 for
+5-minute) with a pause between requests, and a timeout or pacing
+violation is retried once. `ib_async` returns an empty list on failure
+rather than raising, so IB's error codes are captured separately to tell
+"no data" apart from a permission problem, pacing, or a timeout. The
+request conventions are fixed and recorded with every download:
+
+- `whatToShow="TRADES"`, `useRTH=True`. TRADES history is adjusted for
+  splits and bonus issues but not dividends. I checked this on RELIANCE's
+  1:1 bonus (ex 2024-10-28) and HDFCBANK's (ex 2025-08-26), and both
+  pass through smoothly. So these are price returns, not total returns.
+- Daily bars keep the exchange session date with no time component.
+  Intraday bars are timezone-aware Asia/Kolkata times, each the start
+  of its bar.
+- IB returns zero-volume, zero-trade placeholder bars on some holidays
+  (2024-11-20, an election holiday, in all 16 stocks). These are dropped
+  and logged, since leaving them in would add a fake zero-return day.
+  Missing bars are reported, never filled in.
+
+**Local storage.** `ibkr_storage.py` keeps bars in Parquet under
+`data/cache/ibkr/{paper|live}/{daily|5min}/`, which is already
+gitignored. Each file records the request settings, the date ranges
+downloaded so far, and a log of every download. `fetch_and_store()`
+only downloads what isn't already stored. A new download that disagrees
+with stored bars raises instead of silently overwriting them (the
+expected case is a split, since IB back-adjusts history; re-downloading
+with `on_conflict="replace"` handles it). Every write is validated, read
+back, and compared before it replaces the old file, and today's bars
+aren't stored before 16:00 IST.
+
+**Feeding the risk engine.** `ibkr_prices.fetch_ibkr_price_data()`
+returns the same close-price frame as `shared.data.fetch_price_data()`:
+session dates as the index, one column per NSE tradingsymbol. Three
+symbols are spelled differently on IB (HINDUNILVR is HINDUNILV, M&M is
+MM, ULTRACEMCO is ULTRACEMC); the adapter maps them and keeps the NSE
+names. It is stricter than the Kite path on gaps on purpose:
+`portfolio_returns` sums across tickers, so a missing price would
+silently count as a zero return. The adapter refuses the data if a
+ticker is missing, starts late, ends early, or lacks a close on a day
+the others traded, or if there are fewer than 250 aligned sessions.
+
+```
+python -m risk_project.run_report                       # Kite (default)
+python -m risk_project.run_report --source ibkr_paper   # IBKR paper TWS
+python -m risk_project.run_report --source ibkr_live    # IBKR live TWS
+```
+
+IBKR runs write `scenario_report_ibkr_paper.csv` /
+`backtest_report_ibkr_paper.csv` (or `_ibkr_live`), so the Kite report
+files are never overwritten. The VaR, factor, stress, and backtest code
+is the same for all three sources.
+
+### Limitations and assumptions
+
+- **Price returns only.** IB's TRADES closes aren't dividend-adjusted.
+  IB's `ADJUSTED_LAST` series is, but it only works with an open end
+  date, which rules out the chunked downloads used here.
+- **IB's NSE volume is not exchange volume.** For RELIANCE in October
+  2026 it was roughly 4-5% of the NSE figure, and the ratio varied by
+  day. IB's daily volume equals the sum of its own intraday bars. Fine
+  to ignore for close-based risk work; don't use it for liquidity or ADV.
+- **Closing auction from 2026-08-03.** NSE started a Closing Auction
+  Session for stocks with derivatives on that date: continuous trading
+  ends at 15:15 and an auction sets the official close. IB's intraday
+  bars cover continuous trading only, so the expected 5-minute session
+  is 09:15-15:15 from 2026-08-03 and 09:15-15:30 before it. A year of
+  live TATASTEEL bars shows the switch cleanly (complete through
+  2026-07-31, ending at 15:15 every session since), and RELIANCE
+  matches. Daily closes aren't affected: IB's daily close is the
+  official close. The date rule assumes the stock is in the auction,
+  which all 16 portfolio stocks are.
+- **Paper and live data aren't quite the same.** Closes match exactly
+  (16 stocks x 740 sessions), but there are 28 differences in
+  open/high/low, and about 30% of daily volumes differ, by up to ~3%.
+  The two are stored separately for that reason.
+- IB has no bars for NSE's short special Saturday sessions on
+  2024-01-20 and 2024-03-02. The Budget-day weekend sessions
+  (2025-02-01, 2026-02-01) are there.
+- Only `1 day` and `5 mins` bars are supported.
+
+### Testing
+
+103 mocked unit tests (`tests/test_ibkr_connection.py`,
+`test_ibkr_provider.py`, `test_ibkr_storage.py`, `test_ibkr_prices.py`,
+`test_run_report.py`) cover connection config and the paper/live check,
+contract qualification, normalization, dates and sessions, duplicates,
+gaps, placeholder bars, storage and conflicts, empty responses, and
+error handling. None of them need TWS running.
+
+`tests/integration/` holds opt-in tests against a real paper TWS. They
+are skipped unless you set `IBKR_PAPER_TESTS=1`:
+
+```
+$env:IBKR_PAPER_TESTS = "1"; python -m pytest tests/integration -v -s
+```
+
+There are deliberately no live-account tests, so nothing can run against
+live automatically. Live checks are run by hand with the `checks/`
+scripts (`check_ibkr_connection.py`, `check_ibkr_daily_history.py`,
+`check_ibkr_intraday.py`, `check_ibkr_storage.py`,
+`check_ibkr_risk_inputs.py`), each with an `--environment live` option.
+
+### Results
+
+Run on 2026-10-24/25 against both paper and live TWS over the trailing
+3-year window (2023-10-25 to 2026-10-23, 740 sessions). All 16 stocks
+came back complete and aligned, with no gaps. The 45 weekdays without a
+bar are NSE holidays. The largest single-day move in any stock is 16.8%
+(ONGC on 2024-06-04, election results day), so there are no unadjusted
+corporate actions in the data. RELIANCE's last five closes matched an
+independent source exactly.
+
+Because paper and live closes are identical, both IBKR reports give the
+same numbers:
+
+| Method     | 95% VaR   | 99% VaR   |
+|------------|----------:|----------:|
+| Historical | ₹133,093  | ₹204,174  |
+| Parametric | ₹134,999  | ₹190,932  |
+
+Factor model (2023-10-26 to 2025-12-31, 539 observations): MF 0.833,
+SMB -0.332, HML -0.111, WML -0.056, R² 0.839. These are close to the
+Kite results in `risk_project`'s Results section. The windows differ
+(the Kite run ends 2026-08-30), so the comparison is a sanity check, not
+a reconciliation. All four Kupiec tests pass, as they do on Kite data.
+
+### Future work
+
+- Compare IB and Kite 5-minute bars session by session, including what
+  NSE prints during the closing auction.
+- A one-command daily refresh of the local store for the portfolio.
+- Pull a dividend-adjusted series (`ADJUSTED_LAST`) and measure how much
+  ignoring dividends moves VaR.
+- Use IBKR for `signal_project` as well. Its backtest uses the same
+  price function but also needs the NIFTY 50 benchmark, which is an
+  index contract on IB.
 
 *Note: this project's code, tests, and documentation were drafted with AI
 tools in the loop — Claude Code, Sonnet 5, OpenAI Codex, and GPT-6 Astra,
