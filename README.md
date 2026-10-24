@@ -11,7 +11,7 @@ against production Kite data (see `signal_project`'s Results section);
 the live sandbox execution connection is still pending (see
 `signal_project`'s Limitations section). `data_providers` adds Interactive
 Brokers as a second historical data source next to Kite, selectable in
-`risk_project`'s report (see its section below).
+both projects' run scripts (see its section below).
 
 ## risk_project
 
@@ -554,8 +554,9 @@ on.
 ### Problem statement
 
 Add Interactive Brokers (IBKR) as a second, independent source of
-historical NSE prices alongside Kite Connect, so `risk_project` can run
-on either. Kite stays the default, and its code (`shared/data.py`) is
+historical NSE prices alongside Kite Connect, so `risk_project` and
+`signal_project` can run on either. Kite stays the default, and its code
+(`shared/data.py`) is
 unchanged. This is market data only: nothing here places, modifies, or
 cancels orders.
 
@@ -625,6 +626,20 @@ IBKR runs write `scenario_report_ibkr_paper.csv` /
 files are never overwritten. The VaR, factor, stress, and backtest code
 is the same for all three sources.
 
+`signal_project` works the same way:
+
+```
+python -m signal_project.run_backtest                       # Kite (default)
+python -m signal_project.run_backtest --source ibkr_live    # or ibkr_paper
+```
+
+IBKR runs write the NAV and window-report CSVs with the same
+`_ibkr_paper` / `_ibkr_live` suffix. The NIFTY 50 benchmark comes from
+IB's `NIFTY50` index contract. Index bars have no volume or trade count,
+so an index holiday placeholder is recognized as a bar that never moved
+(open = high = low = close) instead. The signal, sizing, and
+walk-forward code is the same for all three sources.
+
 ### Limitations and assumptions
 
 - **Price returns only.** IB's TRADES closes aren't dividend-adjusted.
@@ -648,19 +663,25 @@ is the same for all three sources.
   (16 stocks x 740 sessions), but there are 28 differences in
   open/high/low, and about 30% of daily volumes differ, by up to ~3%.
   The two are stored separately for that reason.
-- IB has no bars for NSE's short special Saturday sessions on
-  2024-01-20 and 2024-03-02. The Budget-day weekend sessions
-  (2025-02-01, 2026-02-01) are there.
+- **IB is missing a few real NSE sessions.** For 2015-01-01,
+  2016-01-01, 2018-01-01 (New Year's Day, when NSE traded) and the
+  2018-11-07 Diwali Muhurat session, IB returns zero-trade placeholder
+  bars for every stock instead of real data. They're dropped like any
+  other placeholder, so those days are simply absent, and IB's history
+  starts on 2015-01-02. Kite has them. IB also has no bars for NSE's
+  short special Saturday sessions on 2024-01-20 and 2024-03-02. The
+  Budget-day weekend sessions (2025-02-01, 2026-02-01) are there.
 - Only `1 day` and `5 mins` bars are supported.
 
 ### Testing
 
-103 mocked unit tests (`tests/test_ibkr_connection.py`,
+113 mocked unit tests (`tests/test_ibkr_connection.py`,
 `test_ibkr_provider.py`, `test_ibkr_storage.py`, `test_ibkr_prices.py`,
-`test_run_report.py`) cover connection config and the paper/live check,
-contract qualification, normalization, dates and sessions, duplicates,
-gaps, placeholder bars, storage and conflicts, empty responses, and
-error handling. None of them need TWS running.
+`test_run_report.py`, `test_run_backtest.py`) cover connection config
+and the paper/live check, contract qualification (stocks and indices),
+normalization, dates and sessions, duplicates, gaps, placeholder bars,
+storage and conflicts, empty responses, and error handling. None of them
+need TWS running.
 
 `tests/integration/` holds opt-in tests against a real paper TWS. They
 are skipped unless you set `IBKR_PAPER_TESTS=1`:
@@ -677,8 +698,9 @@ scripts (`check_ibkr_connection.py`, `check_ibkr_daily_history.py`,
 
 ### Results
 
-Run on 2026-10-24/25 against both paper and live TWS over the trailing
-3-year window (2023-10-25 to 2026-10-23, 740 sessions). All 16 stocks
+**risk_project.** Run on 2026-10-24/25 against both paper and live TWS
+over the trailing 3-year window (2023-10-25 to 2026-10-23, 740
+sessions). All 16 stocks
 came back complete and aligned, with no gaps. The 45 weekdays without a
 bar are NSE holidays. The largest single-day move in any stock is 16.8%
 (ONGC on 2024-06-04, election results day), so there are no unadjusted
@@ -699,6 +721,44 @@ Kite results in `risk_project`'s Results section. The windows differ
 (the Kite run ends 2026-08-30), so the comparison is a sanity check, not
 a reconciliation. All four Kupiec tests pass, as they do on Kite data.
 
+**signal_project.** `python -m signal_project.run_backtest --source
+ibkr_live`, run on 2026-10-25 over 2015-01-02 to 2026-10-23 (2,912
+aligned sessions for all 16 stocks and NIFTY 50, no gaps). The largest
+single-day move in any stock over the whole period is SBIN's 27.7% on
+2017-10-25, the day the PSU bank recapitalization was announced. Every
+other stock stays under 19% (about half of those peaks are in March
+2020), and TATASTEEL's 2022
+1:10 split is adjusted, so there are no unadjusted corporate actions.
+
+Out-of-sample 2017-01-06 to 2026-10-23, 20 rolling windows per book:
+
+| Book                   | Total return | Sharpe | Lookback winner changed |
+|------------------------|-------------:|-------:|------------------------:|
+| Momentum (weekly)      | 218.09%      | 1.04   | 42% of windows          |
+| Mean-reversion (daily) | 76.96%       | 0.50   | 32% of windows          |
+| NIFTY 50               | 174.15%      |        |                         |
+
+Both books gave back ground in 2026: their last two windows (2026-01-13
+to 2026-10-23) have negative out-of-sample Sharpe ratios.
+
+Cut to the Kite run's end date (2026-09-08) for a like-for-like check:
+
+| Book           | Kite     | IBKR     | Same lookback chosen | Daily-return correlation |
+|----------------|---------:|---------:|---------------------:|-------------------------:|
+| Momentum       | 232.12%  | 226.08%  | 9 of 20 windows      | 0.94                     |
+| Mean-reversion | 103.72%  | 79.75%   | 17 of 20 windows     | 0.97                     |
+
+Momentum is close. Part of the difference is the missing IB sessions
+(see Limitations): with 2015-01-01 and 2016-01-01 absent, IB's first
+test window starts on 2017-01-06 instead of 2017-01-03, so every
+train/test split is shifted by a few sessions, which is likely why
+momentum picks a different lookback in 11 windows. The 24-point gap in
+mean-reversion is not explained yet. It rebalances daily, so it is
+sensitive to exact closes and window edges, but separating the two
+needs the Kite prices side by side. Until then, read the IBKR
+mean-reversion figure as a separate estimate, not a correction of the
+Kite one.
+
 ### Future work
 
 - Compare IB and Kite 5-minute bars session by session, including what
@@ -706,9 +766,9 @@ a reconciliation. All four Kupiec tests pass, as they do on Kite data.
 - A one-command daily refresh of the local store for the portfolio.
 - Pull a dividend-adjusted series (`ADJUSTED_LAST`) and measure how much
   ignoring dividends moves VaR.
-- Use IBKR for `signal_project` as well. Its backtest uses the same
-  price function but also needs the NIFTY 50 benchmark, which is an
-  index contract on IB.
+- Explain the mean-reversion gap between the Kite and IBKR backtests by
+  comparing the two price sets day by day, and by re-running both on
+  identical session dates.
 
 *Note: this project's code, tests, and documentation were drafted with AI
 tools in the loop — Claude Code, Sonnet 5, OpenAI Codex, and GPT-6 Astra,
