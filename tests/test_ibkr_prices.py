@@ -16,6 +16,7 @@ from data_providers.ibkr_prices import (
     IBKRInsufficientDataError,
     build_close_prices,
     fetch_ibkr_price_data,
+    ib_sec_type,
     ib_symbol,
 )
 from data_providers.ibkr_provider import EXCHANGE_TIMEZONE, HistoricalData, RequestMetadata
@@ -56,6 +57,12 @@ def test_ib_symbol_maps_the_nse_symbols_ib_spells_differently() -> None:
     assert ib_symbol("HINDUNILVR") == "HINDUNILV"
     assert ib_symbol("ULTRACEMCO") == "ULTRACEMC"
     assert ib_symbol("RELIANCE") == "RELIANCE"
+
+
+def test_nifty_50_maps_to_ibs_index_contract() -> None:
+    assert ib_symbol("NIFTY 50") == "NIFTY50"
+    assert ib_sec_type("NIFTY 50") == "IND"
+    assert ib_sec_type("RELIANCE") == "STK"
 
 
 def test_build_close_prices_matches_fetch_price_data_shape(tmp_path: Path) -> None:
@@ -163,14 +170,15 @@ def test_fetch_ibkr_price_data_downloads_with_ib_symbols_then_builds(
             return None
 
     def _fake_fetch_and_store(ib: Any, symbol: str, start: date, end: date, environment: str, **kwargs: Any) -> None:
-        fetched.append(symbol)
+        fetched.append((symbol, kwargs["sec_type"]))
         _store(kwargs["root"], symbol, start=start, end=end)
 
     monkeypatch.setattr(prices_module, "ibkr_connection", _Connection)
     monkeypatch.setattr(prices_module, "fetch_and_store", _fake_fetch_and_store)
 
-    prices = fetch_ibkr_price_data(["RELIANCE", "M&M"], "2026-09-01", "2026-10-23", root=tmp_path, min_observations=10)
+    prices = fetch_ibkr_price_data(["RELIANCE", "M&M", "NIFTY 50"], "2026-09-01", "2026-10-23",
+                                   root=tmp_path, min_observations=10)
 
     assert connected == ["paper"]
-    assert fetched == ["RELIANCE", "MM"]
-    assert list(prices.columns) == ["RELIANCE", "M&M"]
+    assert fetched == [("RELIANCE", "STK"), ("MM", "STK"), ("NIFTY50", "IND")]
+    assert list(prices.columns) == ["RELIANCE", "M&M", "NIFTY 50"]

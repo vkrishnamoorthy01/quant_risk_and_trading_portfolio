@@ -3,17 +3,26 @@ and print a summary to fill in the README's Results section.
 
 Run this yourself from the repo root:
 
-    python -m signal_project.run_backtest
+    python -m signal_project.run_backtest                        # Kite Connect (default)
+    python -m signal_project.run_backtest --source ibkr_paper    # IBKR, paper TWS (port 7497)
+    python -m signal_project.run_backtest --source ibkr_live     # IBKR, live TWS (port 7496)
 
 The first Kite Connect call each day needs an interactive login: it prints
 a login URL, and after you log in and get redirected, you paste back the
 `request_token` from the redirect URL when prompted. The access token is
 then cached for the rest of the day (see shared/data.py). This script only
 uses the PRODUCTION Kite client for historical data — no orders are placed.
+
+With an IBKR source, prices (and the NIFTY 50 benchmark, as IB's NIFTY50
+index) come from data_providers.ibkr_prices: that TWS must be running, and
+bars already downloaded are reused from data/cache/ibkr/. The CSVs are
+written with an "_ibkr_paper" or "_ibkr_live" suffix so the Kite results
+are never overwritten. IBKR access is read-only market data; no orders.
 """
 
 from __future__ import annotations
 
+from argparse import ArgumentParser
 from pathlib import Path
 
 import pandas as pd
@@ -33,6 +42,24 @@ HISTORY_START = "2015-01-01"
 MOMENTUM_LOOKBACK_GRID = [3, 6, 9, 12]  # months
 MEAN_REVERSION_LOOKBACK_GRID = [3, 5, 10]  # trading days
 BENCHMARK_TICKER = "NIFTY 50"
+PRICE_SOURCES = ("kite", "ibkr_paper", "ibkr_live")
+
+
+def _fetch_prices(source: str, tickers: list[str] | tuple[str, ...], start: str, end: str) -> pd.DataFrame:
+    """Close prices for `tickers` from the chosen source, in fetch_price_data's format."""
+    if source not in PRICE_SOURCES:
+        raise ValueError(f"Unknown price source {source!r}; use one of {PRICE_SOURCES}.")
+    if source == "kite":
+        return fetch_price_data(tickers, start, end)
+    # Imported here so the default Kite run doesn't need ib_async installed.
+    from data_providers.ibkr_prices import fetch_ibkr_price_data
+
+    return fetch_ibkr_price_data(tickers, start, end, environment=source.removeprefix("ibkr_"))
+
+
+def _results_suffix(source: str) -> str:
+    """File-name suffix: empty for Kite (the original names), "_ibkr_paper" or "_ibkr_live" for IBKR."""
+    return "" if source == "kite" else f"_{source}"
 
 
 def _report_book(name: str, notional: float, result, rebalance_freq: str) -> None:
@@ -48,16 +75,17 @@ def _report_book(name: str, notional: float, result, rebalance_freq: str) -> Non
     print(result.window_report[["train_start", "train_end", "test_start", "test_end", "selected_lookback", "out_of_sample_sharpe"]].to_string(index=False))
 
 
-def main() -> None:
+def main(source: str = "kite") -> None:
     end = pd.Timestamp.today().normalize().date().isoformat()
     tickers = MOMENTUM_BOOK.tickers
+    source_label = "Kite Connect" if source == "kite" else f"IBKR ({source.removeprefix('ibkr_')})"
 
-    print(f"Fetching {len(tickers)} tickers from {HISTORY_START} to {end} via Kite Connect...")
-    prices = fetch_price_data(tickers, HISTORY_START, end)
+    print(f"Fetching {len(tickers)} tickers from {HISTORY_START} to {end} via {source_label}...")
+    prices = _fetch_prices(source, tickers, HISTORY_START, end)
     returns = compute_returns(prices, method="simple")
 
     print(f"Fetching {BENCHMARK_TICKER} for the same window (market context)...")
-    benchmark_prices = fetch_price_data([BENCHMARK_TICKER], HISTORY_START, end)
+    benchmark_prices = _fetch_prices(source, [BENCHMARK_TICKER], HISTORY_START, end)
 
     print("\nRunning walk-forward for the momentum book...")
     momentum_result = run_walk_forward(
@@ -84,12 +112,16 @@ def main() -> None:
     print("  beta, so this benchmark return should be read alongside each book's result, not ignored.")
 
     RESULTS_DIR.mkdir(exist_ok=True)
-    momentum_result.nav.to_csv(RESULTS_DIR / "momentum_nav.csv", header=["nav"])
-    momentum_result.window_report.to_csv(RESULTS_DIR / "momentum_window_report.csv", index=False)
-    mean_reversion_result.nav.to_csv(RESULTS_DIR / "mean_reversion_nav.csv", header=["nav"])
-    mean_reversion_result.window_report.to_csv(RESULTS_DIR / "mean_reversion_window_report.csv", index=False)
-    print(f"\nSaved NAV and window-report CSVs to {RESULTS_DIR}")
+    suffix = _results_suffix(source)
+    momentum_result.nav.to_csv(RESULTS_DIR / f"momentum_nav{suffix}.csv", header=["nav"])
+    momentum_result.window_report.to_csv(RESULTS_DIR / f"momentum_window_report{suffix}.csv", index=False)
+    mean_reversion_result.nav.to_csv(RESULTS_DIR / f"mean_reversion_nav{suffix}.csv", header=["nav"])
+    mean_reversion_result.window_report.to_csv(RESULTS_DIR / f"mean_reversion_window_report{suffix}.csv", index=False)
+    print(f"\nSaved NAV and window-report CSVs (suffix '{suffix}') to {RESULTS_DIR}")
 
 
 if __name__ == "__main__":
-    main()
+    parser = ArgumentParser(description="End-to-end signal_project walk-forward backtest.")
+    parser.add_argument("--source", choices=PRICE_SOURCES, default="kite", help="price source (default: kite)")
+    args = parser.parse_args()
+    main(source=args.source)

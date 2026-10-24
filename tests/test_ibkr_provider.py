@@ -18,6 +18,7 @@ from data_providers.ibkr_provider import (
     IBKRRequestError,
     IBKRValidationError,
     chunk_date_range,
+    drop_flat_index_bars,
     clean_bars,
     find_missing_weekdays,
     check_intraday_sessions,
@@ -25,6 +26,7 @@ from data_providers.ibkr_provider import (
     session_close,
     get_historical_data,
     get_intraday_data,
+    qualify_contract,
     qualify_stock,
 )
 
@@ -121,7 +123,7 @@ def test_qualify_stock_returns_the_single_match() -> None:
 
 
 def test_qualify_stock_rejects_an_unknown_symbol() -> None:
-    with pytest.raises(IBKRContractError, match="No IB contract"):
+    with pytest.raises(IBKRContractError, match="No IB STK contract"):
         qualify_stock(_FakeIB([], n_contracts=0), "NOTASTOCK")
 
 
@@ -535,3 +537,63 @@ def test_a_range_spanning_the_auction_start_uses_each_sessions_own_grid() -> Non
     assert result.metadata.n_bars == 75 + 72
     assert result.metadata.incomplete_sessions == {}
     assert result.metadata.bars_outside_session == 0
+
+
+# --- index contracts ------------------------------------------------------------
+
+
+def _index_bar(day: date, close: float = 22600.0) -> _Bar:
+    """An index bar as IB returns it: real OHLC, but no volume and no trade count."""
+    return _Bar(day, open=close - 50, high=close + 40, low=close - 80, close=close, volume=0.0, average=0.0, barCount=0)
+
+
+def test_qualify_contract_asks_ib_for_an_index_when_told_to() -> None:
+    requested = []
+
+    class _RecordingIB(_FakeIB):
+        def reqContractDetails(self, contract: Any) -> list[_Details]:
+            requested.append(contract.secType)
+            return super().reqContractDetails(contract)
+
+    contract = qualify_contract(_RecordingIB([]), "NIFTY50", sec_type="IND")
+
+    assert requested == ["IND"]
+    assert contract.symbol == "NIFTY50"
+
+
+def test_qualify_contract_rejects_other_security_types() -> None:
+    with pytest.raises(ValueError, match="STK"):
+        qualify_contract(_FakeIB([]), "NIFTY", sec_type="FUT")
+
+
+def test_drop_flat_index_bars_removes_only_bars_that_never_moved() -> None:
+    frame = _frame([
+        {"date": Timestamp("2024-11-19"), "open": 23500.0, "high": 23600.0, "low": 23450.0, "close": 23520.0},
+        {"date": Timestamp("2024-11-20"), "open": 23520.0, "high": 23520.0, "low": 23520.0, "close": 23520.0},
+    ])
+
+    kept, dropped = drop_flat_index_bars(frame)
+
+    assert list(kept["date"]) == [Timestamp("2024-11-19")]
+    assert dropped == [Timestamp("2024-11-20")]
+
+
+def test_index_bars_with_no_volume_are_kept_and_flat_holiday_bars_dropped() -> None:
+    days = [ts.date() for ts in bdate_range(date(2024, 11, 18), date(2024, 11, 22))]
+    bars = [_index_bar(d) for d in days]
+    bars[2] = _Bar(days[2], 22600.0, 22600.0, 22600.0, 22600.0, volume=0.0, average=0.0, barCount=0)  # 2024-11-20
+    ib = _FakeIB([(bars, [])])
+
+    result = get_historical_data(ib, "NIFTY50", days[0], days[-1], environment="live", sec_type="IND")
+
+    assert result.metadata.n_bars == 4  # zero volume alone does not make an index bar a placeholder
+    assert result.metadata.placeholder_bars_dropped == [Timestamp("2024-11-20")]
+    assert result.metadata.sec_type == "IND"
+
+
+def test_stock_requests_still_record_stk() -> None:
+    ib = _FakeIB([(_weekday_bars(date(2026, 10, 19), date(2026, 10, 23)), [])])
+
+    result = get_historical_data(ib, "RELIANCE", date(2026, 10, 19), date(2026, 10, 23), environment="paper")
+
+    assert result.metadata.sec_type == "STK"

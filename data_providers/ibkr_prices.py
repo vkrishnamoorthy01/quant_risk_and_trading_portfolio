@@ -42,14 +42,24 @@ IB_SYMBOLS: dict[str, str] = {
     "ULTRACEMCO": "ULTRACEMC",
 }
 
+# Kite index names -> IB index symbols. These are fetched as IB index ("IND") contracts.
+IB_INDEX_SYMBOLS: dict[str, str] = {
+    "NIFTY 50": "NIFTY50",
+}
+
 
 class IBKRInsufficientDataError(IBKRDataError):
     """Stored IBKR data does not cover every ticker over the requested window."""
 
 
 def ib_symbol(ticker: str) -> str:
-    """The IB symbol for an NSE tradingsymbol."""
-    return IB_SYMBOLS.get(ticker, ticker)
+    """The IB symbol for an NSE tradingsymbol or a Kite index name such as "NIFTY 50"."""
+    return IB_INDEX_SYMBOLS.get(ticker) or IB_SYMBOLS.get(ticker, ticker)
+
+
+def ib_sec_type(ticker: str) -> str:
+    """The IB security type: "IND" for a known index name, "STK" otherwise."""
+    return "IND" if ticker in IB_INDEX_SYMBOLS else "STK"
 
 
 def build_close_prices(
@@ -147,5 +157,5 @@ def fetch_ibkr_price_data(
     with ibkr_connection(load_ibkr_config(environment)) as ib:
         for ticker in tickers:
             fetch_and_store(ib, ib_symbol(ticker), start_date, end_date, environment,
-                            exchange=exchange, currency=currency, root=root)
+                            exchange=exchange, currency=currency, root=root, sec_type=ib_sec_type(ticker))
     return build_close_prices(tickers, start, end, environment, exchange, root=root, **checks)

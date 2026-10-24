@@ -61,7 +61,7 @@ from typing import Any
 from warnings import warn
 from zoneinfo import ZoneInfo
 
-from ib_async import IB, Contract, Stock
+from ib_async import IB, Contract, Index, Stock
 from pandas import DataFrame, Timedelta, Timestamp, bdate_range, concat
 
 logger = getLogger(__name__)
@@ -138,6 +138,7 @@ class RequestMetadata:
     # Intraday only: session date -> number of expected bars with no data.
     incomplete_sessions: dict[date, int] = field(default_factory=dict)
     bars_outside_session: int = 0
+    sec_type: str = "STK"
 
 
 @dataclass(frozen=True)
@@ -148,9 +149,19 @@ class HistoricalData:
 
 def qualify_stock(ib: IB, symbol: str, exchange: str = "NSE", currency: str = "INR") -> Contract:
     """Resolve `symbol` to exactly one IB stock contract, or raise IBKRContractError."""
-    details = ib.reqContractDetails(Stock(symbol, exchange, currency))
+    return qualify_contract(ib, symbol, exchange, currency, sec_type="STK")
+
+
+def qualify_contract(
+    ib: IB, symbol: str, exchange: str = "NSE", currency: str = "INR", sec_type: str = "STK"
+) -> Contract:
+    """Resolve `symbol` to exactly one IB stock ("STK") or index ("IND") contract, or raise IBKRContractError."""
+    if sec_type not in ("STK", "IND"):
+        raise ValueError(f"sec_type {sec_type!r} is not supported; use 'STK' or 'IND'.")
+    template = Stock(symbol, exchange, currency) if sec_type == "STK" else Index(symbol, exchange, currency)
+    details = ib.reqContractDetails(template)
     if not details:
-        raise IBKRContractError(f"No IB contract found for {symbol} on {exchange} in {currency}.")
+        raise IBKRContractError(f"No IB {sec_type} contract found for {symbol} on {exchange} in {currency}.")
     if len(details) > 1:
         matches = [
             f"conId={d.contract.conId} primaryExchange={d.contract.primaryExchange} localSymbol={d.contract.localSymbol}"
@@ -279,6 +290,13 @@ def _session_dates(frame: DataFrame, time_column: str) -> Any:
     if time_column == "timestamp":
         return frame[time_column].dt.tz_localize(None).dt.normalize()
     return frame[time_column]
+
+
+def drop_flat_index_bars(frame: DataFrame, time_column: str = "date") -> tuple[DataFrame, list[Timestamp]]:
+    """Remove index bars with open = high = low = close: IB's holiday placeholders, since an index never sits still all day."""
+    flat = (frame["open"] == frame["high"]) & (frame["high"] == frame["low"]) & (frame["low"] == frame["close"])
+    dropped = sorted(frame.loc[flat, time_column])
+    return frame[~flat].reset_index(drop=True), dropped
 
 
 def clean_bars(frame: DataFrame, symbol: str, time_column: str = "date") -> tuple[DataFrame, int]:
@@ -433,17 +451,22 @@ def get_historical_data(
     use_rth: bool = True,
     pause: float = 2.0,
     timeout: float = 60.0,
+    sec_type: str = "STK",
 ) -> HistoricalData:
-    """Download, clean and validate daily OHLCV bars for one stock over [start_date, end_date].
+    """Download, clean and validate daily OHLCV bars for one stock or index over [start_date, end_date].
 
     Args:
         ib: A connected client from data_providers.ibkr_connection.ibkr_connection.
-        symbol: IB symbol, e.g. "RELIANCE" (same as the NSE tradingsymbol for most stocks).
+        symbol: IB symbol, e.g. "RELIANCE" (same as the NSE tradingsymbol for most
+            stocks) or "NIFTY50" for the index.
         start_date, end_date: Inclusive session-date range.
         environment: "paper" or "live", recorded in the metadata; pass config.environment.
         bar_size: Only "1 day"; use get_intraday_data for intraday bars.
         pause: Seconds between chunk requests, to stay inside IB's pacing limits.
         timeout: Seconds to wait for each chunk before treating it as timed out.
+        sec_type: "STK" for a stock, "IND" for an index. Index bars carry no
+            volume or trade count, so holiday placeholders are recognized by
+            a flat bar (open = high = low = close) instead.
 
     Returns:
         HistoricalData with `bars` (one row per session, sorted, columns
@@ -452,10 +475,13 @@ def get_historical_data(
     if bar_size != _DAILY_BAR_SIZE:
         raise ValueError(f"bar_size {bar_size!r} is not supported here; only '1 day'. Use get_intraday_data.")
 
-    contract = qualify_stock(ib, symbol, exchange, currency)
+    contract = qualify_contract(ib, symbol, exchange, currency, sec_type)
     raw, empty_chunks, n_requests = _download(ib, contract, start_date, end_date, bar_size, use_rth, pause, timeout)
     bars, duplicates_dropped = clean_bars(raw, symbol)
-    bars, placeholders = drop_placeholder_bars(bars)
+    if sec_type == "IND":
+        bars, placeholders = drop_flat_index_bars(bars)
+    else:
+        bars, placeholders = drop_placeholder_bars(bars)
     if bars.empty:
         raise IBKRNoDataError(f"IB returned only placeholder bars for {symbol} between {start_date} and {end_date}.")
     missing_weekdays = find_missing_weekdays(bars)
@@ -491,6 +517,7 @@ def get_historical_data(
         empty_chunks=empty_chunks,
         downloaded_at=datetime.now(timezone.utc),
         warnings=notes,
+        sec_type=sec_type,
     )
     logger.info(
         "ibkr daily bars symbol=%s n_bars=%d first=%s last=%s requests=%d missing_weekdays=%d",
