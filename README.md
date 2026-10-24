@@ -556,9 +556,25 @@ on.
 Add Interactive Brokers (IBKR) as a second, independent source of
 historical NSE prices alongside Kite Connect, so `risk_project` and
 `signal_project` can run on either. Kite stays the default, and its code
-(`shared/data.py`) is
-unchanged. This is market data only: nothing here places, modifies, or
-cancels orders.
+(`shared/data.py`) is unchanged. This is market data only: nothing here
+places, modifies, or cancels orders.
+
+### Setup
+
+- Install the dependencies in your Python environment with
+  `pip install -r requirements.txt`. The IBKR code needs `ib_async`
+  (the TWS API client) and `pyarrow` (Parquet storage).
+- Run Trader Workstation and log in to the account you want (paper or
+  live). Under **Global Configuration → API → Settings**:
+  - tick **Enable ActiveX and Socket Clients**;
+  - set the **Socket port** to 7497 for paper or 7496 for live (the
+    defaults this code expects);
+  - keep **Read-Only API** ticked. That setting, not the code, is what
+    stops orders at the broker.
+- The account needs NSE market-data permissions for historical bars.
+- Ports, client ID, and timeout can be changed with the optional
+  `IBKR_*` variables in `.env` (see `.env.example`). No credentials go
+  there: TWS handles the login.
 
 ### Methodology
 
@@ -573,8 +589,9 @@ setting, which stays on. Ports, client ID, and timeout can be overridden
 with optional `IBKR_*` variables (see `.env.example`). TWS handles the
 login, so no credentials are stored.
 
-**Historical bars.** `ibkr_provider.py` downloads daily and 5-minute
-bars. Long ranges are split into chunks (365 days for daily, 7 for
+**Historical bars.** `ibkr_provider.py` downloads daily
+(`get_historical_data()`) and 5-minute (`get_intraday_data()`) bars.
+Long ranges are split into chunks (365 days for daily, 7 for
 5-minute) with a pause between requests, and a timeout or pacing
 violation is retried once. `ib_async` returns an empty list on failure
 rather than raising, so IB's error codes are captured separately to tell
@@ -692,9 +709,26 @@ $env:IBKR_PAPER_TESTS = "1"; python -m pytest tests/integration -v -s
 
 There are deliberately no live-account tests, so nothing can run against
 live automatically. Live checks are run by hand with the `checks/`
-scripts (`check_ibkr_connection.py`, `check_ibkr_daily_history.py`,
-`check_ibkr_intraday.py`, `check_ibkr_storage.py`,
-`check_ibkr_risk_inputs.py`), each with an `--environment live` option.
+scripts, each with an `--environment live` option:
+
+- `check_ibkr_connection.py`: connect, verify the environment, pull a
+  month of daily bars.
+- `check_ibkr_daily_history.py`: three years of daily bars for a few
+  stocks, with gaps, placeholders, and a corporate-action spot check.
+- `check_ibkr_intraday.py`: a small window of 5-minute bars, checked
+  session by session against the daily bars.
+- `check_ibkr_storage.py`: fill the local store, then confirm a repeat
+  run downloads nothing.
+- `check_ibkr_risk_inputs.py`: build the 16-stock price frame and run
+  VaR on it, printing only.
+
+Two more scripts sit alongside them. `check_ibkr_vs_kite_intraday.py`
+compares IB and Kite 5-minute bars for the same sessions; it needs a
+Kite login and paper TWS, and hasn't been run yet (see Future work).
+`check_ib_api_paper_account_original.py` and
+`check_ib_api_live_account_original.py` are the first manual scripts
+used to confirm API access, kept as they were and renamed so pytest
+doesn't collect them (they connect as soon as they're imported).
 
 ### Results
 
