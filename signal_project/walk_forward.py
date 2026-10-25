@@ -7,6 +7,9 @@ simulated as an independent, freshly-flat book (starting at the prior
 window's ending NAV) rather than carrying open positions/stop state
 across the train/test boundary — a deliberate simplification so windows
 can be evaluated and stitched independently; see the project README.
+Test windows partition the out-of-sample dates (no overlap, no gap), so
+every out-of-sample day's return is compounded exactly once. Because each
+window starts flat, its first day earns no return.
 """
 
 from __future__ import annotations
@@ -39,35 +42,40 @@ def sharpe_ratio(returns: pd.Series, periods_per_year: int = TRADING_PERIODS_PER
     return float(returns.mean() / returns.std() * (periods_per_year**0.5))
 
 
-def _clip_to_index(target: pd.Timestamp, dates: pd.DatetimeIndex, side: str) -> pd.Timestamp:
-    """Nearest actual trading date: >= target for "start", <= target for "end"."""
-    if side == "start":
-        pos = dates.searchsorted(target, side="left")
-    else:
-        pos = dates.searchsorted(target, side="right") - 1
-    pos = min(max(pos, 0), len(dates) - 1)
-    return dates[pos]
-
-
 def rolling_windows(
     dates: pd.DatetimeIndex, train_months: int = TRAIN_MONTHS, test_months: int = TEST_MONTHS
 ) -> list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]]:
     """Rolling (train_start, train_end, test_start, test_end) windows.
 
-    The training window is rolling (not expanding), advancing by
-    `test_months` each iteration. Calendar-month boundaries are clipped to
-    the nearest actual trading date in `dates`.
+    All boundaries come from one calendar schedule of anchors,
+    anchor_k = first date + train_months + k * test_months. Test window k
+    holds the trading dates in [anchor_k, anchor_k+1), and its training
+    window holds the trading dates in [anchor_k - train_months, anchor_k).
+    So test windows are strictly ordered and contiguous (each starts on the
+    trading date after the previous one ends, no overlap and no gap), and
+    training always ends the trading date before testing begins. The
+    training window is rolling, not expanding. A final, shorter test window
+    is kept if it holds at least two trading dates.
+
+    An earlier version clipped each boundary to the trading calendar
+    independently, which let a test window start before the previous one
+    ended (e.g. 2021-01-11 after one ending 2021-01-13).
     """
+    dates = pd.DatetimeIndex(dates).sort_values()
+    first = dates.min()
     windows = []
-    train_start = dates.min()
+    k = 0
     while True:
-        train_end = _clip_to_index(train_start + pd.DateOffset(months=train_months), dates, "end")
-        test_start = _clip_to_index(train_end + pd.DateOffset(days=1), dates, "start")
-        test_end = _clip_to_index(test_start + pd.DateOffset(months=test_months), dates, "end")
-        if test_end <= test_start or test_end > dates.max():
+        anchor = first + pd.DateOffset(months=train_months + k * test_months)
+        next_anchor = first + pd.DateOffset(months=train_months + (k + 1) * test_months)
+        test_dates = dates[(dates >= anchor) & (dates < next_anchor)]
+        if len(test_dates) < 2:
             break
-        windows.append((train_start, train_end, test_start, test_end))
-        train_start = _clip_to_index(train_start + pd.DateOffset(months=test_months), dates, "start")
+        train_dates = dates[(dates >= anchor - pd.DateOffset(months=train_months)) & (dates < anchor)]
+        if train_dates.empty:
+            break
+        windows.append((train_dates[0], train_dates[-1], test_dates[0], test_dates[-1]))
+        k += 1
     return windows
 
 
@@ -151,7 +159,12 @@ def run_walk_forward(
         )
 
     nav = pd.concat(nav_segments)
-    nav = nav[~nav.index.duplicated(keep="first")]
+    # Each out-of-sample date belongs to exactly one test window, so the
+    # stitched index is strictly increasing by construction. Check rather
+    # than drop duplicates: dropping rows afterwards cannot undo returns
+    # already compounded into a later segment's starting NAV.
+    if not nav.index.is_monotonic_increasing or nav.index.has_duplicates:
+        raise RuntimeError("Out-of-sample test windows overlap; stitched NAV would double-count returns.")
     return WalkForwardResult(nav=nav, window_report=pd.DataFrame(report_rows))
 
 

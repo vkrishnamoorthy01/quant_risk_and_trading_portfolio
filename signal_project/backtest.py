@@ -1,15 +1,28 @@
 """Day-by-day book simulation: signal -> vol-scaled sizing -> risk controls -> NAV.
 
 Convention: weights decided using information available through the close
-of day t are applied to day t+1's return (no look-ahead). Positions persist
-unchanged between rebalance dates except for a same-day forced exit from
-the per-position stop-loss, which is checked every day regardless of the
-signal's rebalance frequency.
+of day t are applied to day t+1's return (no look-ahead). Between rebalance
+dates the book holds fixed shares, not fixed weights: each position's
+weight drifts with its own return, and the uninvested remainder (cash)
+earns nothing. This is the weight form of holdings/cash accounting, so a
+weekly book is not silently rebalanced every day.
+
+The per-position stop-loss is checked every day regardless of the signal's
+rebalance frequency and forces a same-day exit. A name stopped on day t is
+excluded from day t's rebalance (if t is a rebalance date) and becomes
+eligible again only at the next scheduled rebalance, so a stop can't be
+undone at the same close. For the daily book that is the next day; for the
+weekly book, the next week's first trading day.
+
+A missing return for a held position raises an error rather than being
+treated as a zero return; missing returns for names not held don't affect
+the book and are ignored.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 from typing import Callable
 
 import pandas as pd
@@ -104,12 +117,26 @@ def run_book_backtest(
     weights_rows = {}
 
     for t in dates:
-        day_return = returns.loc[t].reindex(tickers).fillna(0.0)
-        nav *= 1.0 + float((weights * day_return).sum())
+        day_return = returns.loc[t].reindex(tickers)
+        held = weights[weights != 0].index
+        unknown = [ticker for ticker in held if not isfinite(day_return[ticker])]
+        if unknown:
+            raise ValueError(
+                f"No valid return on {t.date()} for held position(s) {unknown}; "
+                "refusing to treat an unknown return as zero."
+            )
+        day_return = day_return.where(weights != 0, 0.0)  # names not held don't move the book
+        portfolio_return = float((weights * day_return).sum())
+        nav *= 1.0 + portfolio_return
         nav_history[t] = nav
+        # Fixed shares between trades: each holding grows with its own
+        # return while NAV grows with the portfolio return.
+        if portfolio_return != -1.0:
+            weights = weights * (1.0 + day_return) / (1.0 + portfolio_return)
         is_halted = halt.update(nav)
 
         current_price = prices.loc[t]
+        stopped_today = []
         for ticker in list(entry_price):
             if weights[ticker] > 0 and stop_loss_triggered(
                 entry_price[ticker], current_price[ticker], entry_vol[ticker], n_sigma
@@ -117,9 +144,12 @@ def run_book_backtest(
                 weights[ticker] = 0.0
                 del entry_price[ticker]
                 del entry_vol[ticker]
+                stopped_today.append(ticker)
 
         if t in rebalance_dates:
-            target = vol_scaled_weights(signal.loc[t], vol.loc[t], cap)
+            eligible = signal.loc[t].copy()
+            eligible[stopped_today] = False  # a stop holds until the next scheduled rebalance
+            target = vol_scaled_weights(eligible, vol.loc[t], cap)
             target = _apply_halt(weights, target, is_halted)
 
             newly_opened = (weights == 0) & (target > 0)

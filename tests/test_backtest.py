@@ -84,3 +84,85 @@ def test_drawdown_halt_blocks_reopening_a_stopped_out_position() -> None:
     # Next weekly rebalance (2020-01-20): signal is true again but NAV is
     # still deep in drawdown, so the halt should keep this a flat position.
     assert weights.loc["2020-01-20"] == 0.0
+
+
+# --- audit regressions ----------------------------------------------------------
+
+import pytest  # noqa: E402
+
+import signal_project.backtest as backtest_module  # noqa: E402
+
+
+def _fixed_weights(signal: pd.Series, vol: pd.Series, cap: float) -> pd.Series:
+    """Equal weights across signaled names, ignoring vol, to isolate accounting."""
+    active = signal[signal].index
+    weights = pd.Series(0.0, index=signal.index)
+    weights[active] = 1.0 / len(active)
+    return weights
+
+
+def test_weights_drift_with_prices_between_weekly_rebalances(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The audit's controlled example: 50/50 in A and B with no trades in
+    # between; A goes 100 -> 200 -> 100, B stays at 100. Fixed shares must
+    # bring NAV back to exactly 100. Re-applying constant 50/50 weights each
+    # day (implicit daily rebalancing) gives 112.5 instead.
+    monkeypatch.setattr(backtest_module, "vol_scaled_weights", _fixed_weights)
+    monkeypatch.setattr(backtest_module, "realized_vol", lambda returns, lookback: returns * 0.0 + 0.01)
+    dates = pd.to_datetime(["2020-01-10", "2020-01-13", "2020-01-14", "2020-01-15"])  # Fri, Mon, Tue, Wed
+    prices = pd.DataFrame({"A": [100.0, 100.0, 200.0, 100.0], "B": [100.0, 100.0, 100.0, 100.0]}, index=dates)
+    returns = prices.pct_change().dropna()
+
+    result = run_book_backtest(prices, returns, _always_long, lookback=1, book_notional=100.0,
+                               rebalance_freq="W", cap=1.0, n_sigma=1e9)
+
+    assert result.weights_history.loc["2020-01-13"].tolist() == [0.5, 0.5]  # Monday rebalance
+    np.testing.assert_allclose(result.nav.loc["2020-01-14"], 150.0)
+    np.testing.assert_allclose(result.weights_history.loc["2020-01-14"].tolist(), [2 / 3, 1 / 3])  # drifted
+    np.testing.assert_allclose(result.nav.loc["2020-01-15"], 100.0)
+
+
+def _crash_path(crash_day: int, n: int = 30) -> pd.DataFrame:
+    """Small oscillation, a 10% drop on `crash_day`, then small oscillation at the lower level."""
+    base = [100.0, 100.5] * n
+    path = base[:crash_day] + [90.0 + (0.5 if i % 2 else 0.0) for i in range(n * 2 - crash_day)]
+    return pd.DataFrame({"A": path[:n]}, index=pd.bdate_range("2020-01-06", periods=n))
+
+
+def test_a_stopped_name_is_not_reopened_by_the_same_days_daily_rebalance() -> None:
+    prices = _crash_path(crash_day=10)
+    returns = prices.pct_change().dropna()
+    crash = prices.index[10]
+    next_day = prices.index[11]
+
+    result = run_book_backtest(prices, returns, _always_long, lookback=1, book_notional=1_000_000.0,
+                               rebalance_freq="D", cap=1.0, vol_lookback=2, n_sigma=2.0)
+
+    weights = result.weights_history["A"]
+    assert weights.loc[prices.index[9]] == 1.0  # held going into the crash
+    assert weights.loc[crash] == 0.0  # stopped, and not reopened at the same close
+    assert weights.loc[next_day] == 1.0  # eligible again at the next scheduled rebalance
+
+
+def test_a_stop_on_a_weekly_rebalance_day_keeps_the_name_out_until_the_next_week() -> None:
+    # 2020-01-06 is a Monday; index 10 is Monday 2020-01-20, a weekly rebalance day.
+    prices = _crash_path(crash_day=10)
+    returns = prices.pct_change().dropna()
+
+    result = run_book_backtest(prices, returns, _always_long, lookback=1, book_notional=1_000_000.0,
+                               rebalance_freq="W", cap=1.0, vol_lookback=2, n_sigma=2.0)
+
+    weights = result.weights_history["A"]
+    assert weights.loc["2020-01-17"] == 1.0  # held into the crash (opened on 2020-01-13)
+    assert (weights.loc["2020-01-20":"2020-01-24"] == 0.0).all()  # stopped Monday; out all week
+    assert weights.loc["2020-01-27"] == 1.0  # re-entered at the next Monday rebalance
+
+
+def test_a_missing_return_on_a_held_position_raises_instead_of_counting_as_zero() -> None:
+    dates = pd.bdate_range("2020-01-06", periods=15)
+    prices = pd.DataFrame({"A": [100.0, 100.5] * 7 + [100.0]}, index=dates)
+    returns = prices.pct_change().dropna()
+    returns.iloc[10, 0] = np.nan  # A is held by then
+
+    with pytest.raises(ValueError, match="A"):
+        run_book_backtest(prices, returns, _always_long, lookback=1, book_notional=1_000_000.0,
+                          rebalance_freq="D", cap=1.0, vol_lookback=2)
