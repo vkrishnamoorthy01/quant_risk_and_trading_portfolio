@@ -384,6 +384,27 @@ simplification (see Limitations), not an attempt to replicate exactly
 what a continuously-running book would have done across window
 boundaries.
 
+All window boundaries come from one calendar schedule: test window k
+covers the trading dates from first date + 24 + 6k months up to (not
+including) first date + 24 + 6(k+1) months, and its training window is
+the 24 months before that. Test windows therefore partition the
+out-of-sample period: each starts on the trading day after the previous
+one ends, so every out-of-sample day is compounded exactly once. Because
+a window starts flat, its first day earns no return. (Before the October
+2026 audit fixes, boundaries were clipped to the calendar independently,
+which let a test window start before the previous one ended, e.g.
+2021-01-11 after 2021-01-13, and compounded the overlap twice.)
+
+**Position accounting.** Weights are decided at the close of day t and
+earn day t+1's return. Between rebalances the book holds fixed shares:
+each position's weight drifts with its own return and the uninvested
+remainder sits in cash at zero return. A 50/50 book in A and B where A
+goes 100 → 200 → 100 and B is flat therefore ends back at 100, as fixed
+holdings would. (Before the fix, the same weights were reapplied every
+day, which amounted to daily rebalancing and gave 112.5.) A missing
+return for a held position stops the run instead of counting as zero;
+see the input checks in `shared/validation.py`.
+
 **Risk controls** (`signal_project/risk_controls.py`), both reusing
 estimates the rest of the pipeline already computes rather than
 introducing disconnected parameters:
@@ -394,7 +415,11 @@ introducing disconnected parameters:
   fixed at the vol estimate observed when the position was opened.
   Checked every day regardless of the signal's own rebalance frequency,
   so a weekly-rebalanced momentum position can still be stopped out
-  intraweek.
+  intraweek. A stopped name is excluded from that day's rebalance and
+  becomes eligible again only at the next scheduled rebalance: the next
+  day for the daily book, the next week for the weekly book. (Before the
+  fix, a stop on a rebalance day could be undone at the same close, with
+  the entry price reset.)
 - *Book-level drawdown halt:* pause new entries in a book once its NAV
   drawdown from peak exceeds 15%; resume once drawdown recovers to 10% or
   better. Existing positions are not force-liquidated — the halt blocks
@@ -479,7 +504,14 @@ and selection, and order-translation logic are covered by unit tests on
 synthetic data (`tests/test_signals.py`, `test_sizing.py`,
 `test_risk_controls.py`, `test_backtest.py`, `test_walk_forward.py`,
 `test_execution.py`) — none of them hit live Kite, matching
-`risk_project`'s testing convention. `get_sandbox_kite_client()` and the
+`risk_project`'s testing convention. Since the October 2026 audit they
+also check whole-system invariants, not just functions: test windows
+partition the out-of-sample dates; the stitched NAV equals the exact
+product of the returns it should have earned, each day once; fixed shares
+bring a 100 → 200 → 100 two-asset book back to 100; a stop holds until the
+next scheduled rebalance on both the daily and the weekly book; and a
+missing return on a held position raises. `tests/test_validation.py`
+covers the price-panel checks in `shared/validation.py`. `get_sandbox_kite_client()` and the
 sandbox HTTP callback are the one piece that can only be verified live;
 `checks/check_sandbox_order.py` is that live smoke test, run manually
 once sandbox access is available. `checks/` holds standalone, one-off
@@ -491,6 +523,14 @@ walk-forward pass rather than after one fails on bad data (see the
 rate-limit gap caught and fixed during development, above).
 
 ### Results
+
+> **Superseded.** These Kite results were produced on 2026-09-08 by the
+> engine before the October 2026 audit fixes (overlapping walk-forward
+> windows, weights reapplied daily between weekly rebalances, and stops
+> that a same-day rebalance could undo). They have not been rerun because
+> Kite prices aren't cached locally. Corrected results on IBKR data are in
+> the `data_providers` section below; treat the figures here as
+> historical, not as validated performance.
 
 Produced by `python -m signal_project.run_backtest` on 2026-09-08, over
 the stitched out-of-sample walk-forward window 2017-01-03 to 2026-09-08
@@ -612,14 +652,29 @@ request conventions are fixed and recorded with every download:
 
 **Local storage.** `ibkr_storage.py` keeps bars in Parquet under
 `data/cache/ibkr/{paper|live}/{daily|5min}/`, which is already
-gitignored. Each file records the request settings, the date ranges
-downloaded so far, and a log of every download. `fetch_and_store()`
-only downloads what isn't already stored. A new download that disagrees
-with stored bars raises instead of silently overwriting them (the
-expected case is a split, since IB back-adjusts history; re-downloading
-with `on_conflict="replace"` handles it). Every write is validated, read
-back, and compared before it replaces the old file, and today's bars
-aren't stored before 16:00 IST.
+gitignored. Each file records the request settings, a log of every
+download, and three separate views of completeness: the ranges a
+download was **attempted** for, the **unresolved sessions** inside them
+(expected sessions that came back without a bar), and the verified
+**coverage** (attempted minus unresolved). "Expected" comes from an
+explicit NSE calendar, `data_providers/nse_sessions.csv`: 167 weekday
+closures, 11 special weekend sessions (Budget days, Muhurat trading,
+disaster-recovery drills), and 14 sessions NSE held that IB has no data
+for. So a missing ordinary Wednesday is retried on the next fetch, a
+holiday isn't, and a Budget-day Saturday is requested.
+`fetch_and_store()` downloads ranges never attempted plus unresolved
+sessions.
+
+Refreshes keep split adjustment consistent. IB back-adjusts its whole
+TRADES history after a split or bonus, so appending new dates to an old
+cache could splice two adjustment vintages (cached 100s followed by a
+post-split 50 would invent a −50% day). Every refresh therefore
+re-downloads up to five already-stored sessions on each side of a gap.
+If they no longer match, the full stored range is downloaded again and
+replaces the file in a single write, and the download log records
+`revision_detected`. (`on_revision="raise"` stops instead and writes
+nothing.) Every write is validated, read back, and compared before it
+replaces the old file, and today's bars aren't stored before 16:00 IST.
 
 **Feeding the risk engine.** `ibkr_prices.fetch_ibkr_price_data()`
 returns the same close-price frame as `shared.data.fetch_price_data()`:
@@ -680,25 +735,37 @@ walk-forward code is the same for all three sources.
   (16 stocks x 740 sessions), but there are 28 differences in
   open/high/low, and about 30% of daily volumes differ, by up to ~3%.
   The two are stored separately for that reason.
-- **IB is missing a few real NSE sessions.** For 2015-01-01,
-  2016-01-01, 2018-01-01 (New Year's Day, when NSE traded) and the
-  2018-11-07 Diwali Muhurat session, IB returns zero-trade placeholder
-  bars for every stock instead of real data. They're dropped like any
-  other placeholder, so those days are simply absent, and IB's history
-  starts on 2015-01-02. Kite has them. IB also has no bars for NSE's
-  short special Saturday sessions on 2024-01-20 and 2024-03-02. The
-  Budget-day weekend sessions (2025-02-01, 2026-02-01) are there.
+- **IB is missing a few real NSE sessions.** New Year's Day in 2015,
+  2016 and 2018 to 2021 and the 2018-11-07 Diwali Muhurat session (NSE
+  traded on all of them) come back from IB as zero-trade placeholders or
+  no bar at all, so those days are absent and IB's history starts on
+  2015-01-02. IB also has none of the seven short special weekend
+  sessions from 2016-10-30 to 2024-05-18 (Muhurat trading, the
+  2024-01-20 make-up session, two disaster-recovery drills). The four
+  Budget-day weekend sessions are there. All 14 are recorded as
+  `omitted:IBKR` in `nse_sessions.csv`, so they don't show up as
+  unresolved gaps.
+- **The session calendar is derived, and stops at 2026-10-23.** Its
+  closures are the weekdays with no bar for any of the 17 cached
+  instruments, minus the IB omissions above, spot-checked against known
+  holidays but not reconciled line by line with NSE's circulars. After
+  2026-10-23 every weekday counts as a session, so a new holiday shows up
+  as an unresolved gap (and is retried) until the calendar is extended.
+  The intraday 15:15 closing-auction rule is also a single date rule, not
+  a per-instrument eligibility check.
 - Only `1 day` and `5 mins` bars are supported.
 
 ### Testing
 
-113 mocked unit tests (`tests/test_ibkr_connection.py`,
+126 mocked unit tests (`tests/test_ibkr_connection.py`,
 `test_ibkr_provider.py`, `test_ibkr_storage.py`, `test_ibkr_prices.py`,
-`test_run_report.py`, `test_run_backtest.py`) cover connection config
-and the paper/live check, contract qualification (stocks and indices),
-normalization, dates and sessions, duplicates, gaps, placeholder bars,
-storage and conflicts, empty responses, and error handling. None of them
-need TWS running.
+`test_nse_calendar.py`, `test_run_report.py`, `test_run_backtest.py`)
+cover connection config and the paper/live check, contract qualification
+(stocks and indices), normalization, dates and sessions, duplicates,
+gaps, placeholder bars, non-finite values, storage and conflicts,
+attempted vs verified coverage, unresolved-session retries, special
+weekend sessions, split revisions, empty responses, and error handling.
+None of them need TWS running.
 
 `tests/integration/` holds opt-in tests against a real paper TWS. They
 are skipped unless you set `IBKR_PAPER_TESTS=1`:
@@ -764,34 +831,58 @@ other stock stays under 19% (about half of those peaks are in March
 2020), and TATASTEEL's 2022
 1:10 split is adjusted, so there are no unadjusted corporate actions.
 
-Out-of-sample 2017-01-06 to 2026-10-23, 20 rolling windows per book:
+Corrected results, after the October 2026 audit fixes, rerun offline
+from the cached inputs with `python -m signal_project.run_backtest
+--source ibkr_live --cache-only --end 2026-10-23 --tag corrected`
+(results in `*_ibkr_live_corrected.csv`). Out-of-sample 2017-01-05 to
+2026-10-23, 20 contiguous 6-month test windows per book:
 
 | Book                   | Total return | Sharpe | Lookback winner changed |
 |------------------------|-------------:|-------:|------------------------:|
-| Momentum (weekly)      | 218.09%      | 1.04   | 42% of windows          |
-| Mean-reversion (daily) | 76.96%       | 0.50   | 32% of windows          |
-| NIFTY 50               | 174.15%      |        |                         |
+| Momentum (weekly)      | 259.18%      | 1.13   | 37% of windows          |
+| Mean-reversion (daily) | 104.15%      | 0.61   | 42% of windows          |
+| NIFTY 50               | 173.15%      |        |                         |
 
-Both books gave back ground in 2026: their last two windows (2026-01-13
-to 2026-10-23) have negative out-of-sample Sharpe ratios.
+Same cached inputs, before and after the fixes:
 
-Cut to the Kite run's end date (2026-09-08) for a like-for-like check:
+| Book           | Before (audited engine) | After (corrected) | Same lookback chosen |
+|----------------|------------------------:|------------------:|---------------------:|
+| Momentum       | 218.09%, Sharpe 1.04    | 259.18%, Sharpe 1.13 | 15 of 20 windows  |
+| Mean-reversion | 76.96%, Sharpe 0.50     | 104.15%, Sharpe 0.61 | 17 of 20 windows  |
 
-| Book           | Kite     | IBKR     | Same lookback chosen | Daily-return correlation |
-|----------------|---------:|---------:|---------------------:|-------------------------:|
-| Momentum       | 232.12%  | 226.08%  | 9 of 20 windows      | 0.94                     |
-| Mean-reversion | 103.72%  | 79.75%   | 17 of 20 windows     | 0.97                     |
+Fix by fix, on the same inputs (a harness that reproduces both the
+before and after figures exactly):
 
-Momentum is close. Part of the difference is the missing IB sessions
-(see Limitations): with 2015-01-01 and 2016-01-01 absent, IB's first
-test window starts on 2017-01-06 instead of 2017-01-03, so every
-train/test split is shifted by a few sessions, which is likely why
-momentum picks a different lookback in 11 windows. The 24-point gap in
-mean-reversion is not explained yet. It rebalances daily, so it is
-sensitive to exact closes and window edges, but separating the two
-needs the Kite prices side by side. Until then, read the IBKR
-mean-reversion figure as a separate estimate, not a correction of the
-Kite one.
+| Step                           | Momentum          | Mean-reversion    |
+|--------------------------------|------------------:|------------------:|
+| Audited engine                 | 218.09% / 1.04    | 76.96% / 0.50     |
+| + non-overlapping windows      | 258.00% / 1.12    | 94.05% / 0.57     |
+| + fixed-share drift            | 258.53% / 1.12    | 94.05% / 0.57     |
+| + stop exclusion (corrected)   | 259.18% / 1.13    | 104.15% / 0.61    |
+
+Read the increases with care. Most of momentum's gain comes from the
+window schedule, but not mainly from removing double-counted days:
+moving the boundaries by a few sessions changes the selected lookback in
+three of the 20 windows (from 9/6/6 to 12/12/12), and those different
+choices drive most of the difference. That sensitivity to where window
+edges fall is itself a warning about how stable the selection is. Drift
+changes the weekly momentum book only slightly and the daily book not at
+all, as it should (a book rebalanced every day has no days in between
+for weights to drift). The stop fix matters most for daily
+mean-reversion, where the old engine would sell a stopped name and buy
+it straight back at the same close.
+
+The audited engine's report had 8 overlapping window boundaries
+(e.g. a test window ending 2021-01-13 followed by one starting
+2021-01-11); the corrected schedule has none, and each test window now
+starts on the trading day after the previous one ends. Both books still
+lose money in their last two windows (2026-01-05 to 2026-10-23).
+
+The earlier Kite comparison (momentum 232.12% vs 226.08%,
+mean-reversion 103.72% vs 79.75% to 2026-09-08) compared two runs of the
+old engine, so it no longer says anything about the corrected strategy.
+A like-for-like Kite comparison needs a fresh Kite run with the
+corrected engine, which hasn't been done (Kite prices aren't cached).
 
 ### Future work
 
@@ -800,9 +891,24 @@ Kite one.
 - A one-command daily refresh of the local store for the portfolio.
 - Pull a dividend-adjusted series (`ADJUSTED_LAST`) and measure how much
   ignoring dividends moves VaR.
-- Explain the mean-reversion gap between the Kite and IBKR backtests by
-  comparing the two price sets day by day, and by re-running both on
-  identical session dates.
+- Rerun the Kite backtest with the corrected engine, then compare it with
+  the IBKR run on identical session dates, price set against price set.
+
+## Sharing the repository
+
+Don't zip the working folder: it holds files Git deliberately ignores,
+including `.env` (Kite API key and secret), `.kite_session.json` (a Kite
+access token), downloaded market data under `data/cache/`, results, and
+`.git` itself. Build the shareable copy from committed files instead:
+
+```
+python -m tools.export_distribution
+```
+
+This writes `dist/<repo>-<commit>.zip` with `git archive` and refuses to
+write it if any path matches a credential, session-cache, data or results
+pattern (`tools/export_distribution.py`). Uncommitted changes are not
+included.
 
 *Note: this project's code, tests, and documentation were drafted with AI
 tools in the loop — Claude Code, Sonnet 5, OpenAI Codex, and GPT-6 Astra,
