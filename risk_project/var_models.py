@@ -37,7 +37,7 @@ def historical_var(returns: pd.Series, confidence_level: float, notional: float 
     """
     quantile = 1.0 - confidence_level
     var_return = returns.quantile(quantile)
-    return notional * var_return
+    return -notional * var_return
 
 
 def parametric_var(
