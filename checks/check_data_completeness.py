@@ -23,9 +23,12 @@ simply see zero trades during a short special session.
 
 from __future__ import annotations
 
-import os
+import sys
+from pathlib import Path
 
-os.chdir(r"D:\Personal_projects\quant_risk_and_trading_portfolio")
+# Make the repo importable when this file is run directly (python checks/...)
+# or from a notebook, without depending on any machine-specific directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd
 

@@ -12,3 +12,4 @@ data/cache/
 risk_project/results/
 signal_project/results/
 .kite_sandbox_session.json
+dist/

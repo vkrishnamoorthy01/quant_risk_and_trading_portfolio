@@ -39,6 +39,7 @@ from risk_project.stress_testing import (
 )
 from risk_project.var_models import historical_var, parametric_var, portfolio_returns
 from shared.data import compute_returns, fetch_price_data
+from shared.validation import validate_close_prices
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 VAR_LOOKBACK_YEARS = 3
@@ -53,6 +54,9 @@ def _var_window() -> tuple[str, str]:
 
 
 PRICE_SOURCES = ("kite", "ibkr_paper", "ibkr_live")
+# A single no-trade session keeps its last close; a missing ticker or longer gap stops the run,
+# since portfolio_returns would otherwise count a missing price as a zero return.
+MAX_FILL_SESSIONS = 1
 
 
 def _fetch_prices(source: str, start: str, end: str) -> pd.DataFrame:
@@ -79,6 +83,7 @@ def main(source: str = "kite") -> None:
     start, end = _var_window()
 
     prices = _fetch_prices(source, start, end)
+    prices = validate_close_prices(prices, PORTFOLIO.tickers, max_fill_sessions=MAX_FILL_SESSIONS)
 
     # Simple (not log) returns: portfolio return = weighted sum of asset
     # returns only holds exactly for simple returns.

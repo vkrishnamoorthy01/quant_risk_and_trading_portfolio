@@ -16,11 +16,14 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+import sys
+from pathlib import Path
+
 import pandas as pd
 
-import os
-os.chdir(r"D:\Personal_projects\quant_risk_and_trading_portfolio")
-
+# Make the repo importable when this file is run directly (python checks/...)
+# or from a notebook, without depending on any machine-specific directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from shared.data import fetch_price_data
 
