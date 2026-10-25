@@ -248,8 +248,12 @@ def test_fetch_and_store_downloads_only_what_is_not_stored(tmp_path: Path, monke
     stored = fetch_and_store(object(), "TATASTEEL", date(2026, 10, 12), date(2026, 10, 23), "paper",
                              root=tmp_path, now=_NOW)
 
-    assert fake.calls == [(date(2026, 10, 12), date(2026, 10, 16)), (date(2026, 10, 19), date(2026, 10, 23))]
+    # The repeat request downloads nothing. The extension re-downloads the
+    # five stored sessions before the gap (10-12 to 10-16) with it, to check
+    # the stored history hasn't been revised.
+    assert fake.calls == [(date(2026, 10, 12), date(2026, 10, 16)), (date(2026, 10, 12), date(2026, 10, 23))]
     assert len(stored.bars) == 10
+    assert not stored.info["downloads"][-1]["revision_detected"]
 
 
 def test_fetch_and_store_never_requests_beyond_the_last_final_session(
@@ -276,9 +280,12 @@ def test_fetch_and_store_replace_downloads_the_whole_range_again(tmp_path: Path,
     assert fake.calls == [(date(2026, 10, 19), date(2026, 10, 23))] * 2
 
 
-def test_fetch_and_store_tolerates_a_holiday_only_gap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    holiday = (date(2026, 10, 26), date(2026, 10, 26))
-    fake = _FakeFetch(no_data={holiday})
+def test_fetch_and_store_tolerates_a_gap_ib_returns_nothing_for(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 2026-10-26 is after the calendar's verified range, so it counts as an
+    # expected session. IB returning nothing for it must not fail the refresh:
+    # the day is recorded as unresolved, left out of verified coverage, and
+    # retried next time.
+    fake = _AdjustableFetch(skip={date(2026, 10, 26)})
     monkeypatch.setattr(storage_module, "get_historical_data", fake)
     later = datetime(2026, 10, 27, 9, 0, tzinfo=EXCHANGE_TIMEZONE)  # last final session: Mon 10-26
 
@@ -286,9 +293,62 @@ def test_fetch_and_store_tolerates_a_holiday_only_gap(tmp_path: Path, monkeypatc
     stored = fetch_and_store(object(), "TATASTEEL", date(2026, 10, 19), date(2026, 10, 26), "paper",
                              root=tmp_path, now=later)
 
-    assert fake.calls[-1] == holiday
     assert len(stored.bars) == 5
-    assert stored.info["coverage"] == [["2026-10-19", "2026-10-23"]]  # left open, retried next time
+    assert stored.info["attempted"] == [["2026-10-19", "2026-10-26"]]
+    assert stored.info["unresolved_sessions"] == ["2026-10-26"]
+    assert stored.info["coverage"] == [["2026-10-19", "2026-10-25"]]
+
+    fake.calls.clear()
+    fetch_and_store(object(), "TATASTEEL", date(2026, 10, 19), date(2026, 10, 26), "paper", root=tmp_path, now=later)
+    assert any(start <= date(2026, 10, 26) <= end for start, end in fake.calls)  # retried
+
+
+def test_fetch_and_store_raises_when_nothing_at_all_comes_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeFetch(no_data={(date(2026, 10, 26), date(2026, 10, 26))})
+    monkeypatch.setattr(storage_module, "get_historical_data", fake)
+    later = datetime(2026, 10, 27, 9, 0, tzinfo=EXCHANGE_TIMEZONE)
+
+    with pytest.raises(IBKRNoDataError):
+        fetch_and_store(object(), "TATASTEEL", date(2026, 10, 26), date(2026, 10, 26), "paper",
+                        root=tmp_path, now=later)
+
+
+def test_a_revision_can_be_made_to_raise_instead_of_refetching(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _AdjustableFetch(close=100.0)
+    monkeypatch.setattr(storage_module, "get_historical_data", fake)
+    fetch_and_store(object(), "TATASTEEL", date(2026, 10, 5), date(2026, 10, 16), "paper", root=tmp_path, now=_NOW)
+    before = dataset_path("TATASTEEL", "paper", root=tmp_path).read_bytes()
+
+    fake.close = 50.0
+    with pytest.raises(IBKRStorageConflictError, match="split or bonus"):
+        fetch_and_store(object(), "TATASTEEL", date(2026, 10, 5), date(2026, 10, 23), "paper",
+                        root=tmp_path, now=_NOW, on_revision="raise")
+
+    assert dataset_path("TATASTEEL", "paper", root=tmp_path).read_bytes() == before
+
+
+def test_a_schema_1_file_is_read_with_coverage_as_attempted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Files written before this change recorded attempted ranges as "coverage".
+    save_bars(_result(date(2026, 10, 12), date(2026, 10, 16), skip={date(2026, 10, 14)}), root=tmp_path, now=_NOW)
+    path = dataset_path("TATASTEEL", "paper", root=tmp_path)
+    table = storage_module.read_table(path)
+    info = storage_module.loads(table.schema.metadata[b"ibkr"])
+    old_info = {k: v for k, v in info.items() if k not in ("attempted", "unresolved_sessions")}
+    old_info.update(schema_version=1, coverage=[["2026-10-12", "2026-10-16"]])
+    storage_module.write_table(
+        table.replace_schema_metadata({**table.schema.metadata, b"ibkr": storage_module.dumps(old_info).encode()}),
+        path,
+    )
+    fake = _AdjustableFetch()
+    monkeypatch.setattr(storage_module, "get_historical_data", fake)
+
+    stored = fetch_and_store(object(), "TATASTEEL", date(2026, 10, 12), date(2026, 10, 16), "paper",
+                             root=tmp_path, now=_NOW)
+
+    assert any(start <= date(2026, 10, 14) <= end for start, end in fake.calls)  # the old gap is found and retried
+    assert stored.info["schema_version"] == 2 and stored.info["unresolved_sessions"] == []
 
 
 def test_fetch_and_store_uses_the_intraday_fetcher_for_5_minute_bars(
@@ -307,3 +367,94 @@ def test_fetch_and_store_uses_the_intraday_fetcher_for_5_minute_bars(
 
     assert calls == ["5 mins"]
     assert stored.path.parent.name == "5min"
+
+
+# --- audit regressions: coverage and split revisions ----------------------------
+
+
+class _AdjustableFetch:
+    """A fake IB that serves every weekday in a range at `close`, minus `skip`.
+
+    Changing `close` between calls simulates IB back-adjusting the whole
+    history after a split: every date it returns uses the new close.
+    """
+
+    def __init__(self, close: float = 100.0, skip: set[date] = frozenset()) -> None:
+        self.close = close
+        self.skip = set(skip)
+        self.calls: list[tuple[date, date]] = []
+
+    def __call__(self, ib: Any, symbol: str, start: date, end: date, environment: str, **kwargs: Any) -> HistoricalData:
+        self.calls.append((start, end))
+        days = [ts.date() for ts in bdate_range(start, end) if ts.date() not in self.skip]
+        if not days:
+            raise IBKRNoDataError("no bars")
+        return _result(start, end, close=self.close, skip=self.skip, symbol=symbol)
+
+
+def test_a_missing_ordinary_session_is_retried_not_marked_covered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Wednesday 2026-10-14 is an ordinary NSE session. If IB leaves it out,
+    # the range must not count as covered: a repeat request asks for it again.
+    fake = _AdjustableFetch(skip={date(2026, 10, 14)})
+    monkeypatch.setattr(storage_module, "get_historical_data", fake)
+    fetch_and_store(object(), "TATASTEEL", date(2026, 10, 12), date(2026, 10, 16), "paper", root=tmp_path, now=_NOW)
+
+    fake.calls.clear()
+    fake.skip = set()  # IB has it this time
+    stored = fetch_and_store(object(), "TATASTEEL", date(2026, 10, 12), date(2026, 10, 16), "paper",
+                             root=tmp_path, now=_NOW)
+
+    assert any(start <= date(2026, 10, 14) <= end for start, end in fake.calls)
+    assert Timestamp("2026-10-14") in set(stored.bars["date"])
+
+
+def test_a_still_missing_session_is_kept_as_an_unresolved_gap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _AdjustableFetch(skip={date(2026, 10, 14)})
+    monkeypatch.setattr(storage_module, "get_historical_data", fake)
+
+    stored = fetch_and_store(object(), "TATASTEEL", date(2026, 10, 12), date(2026, 10, 16), "paper",
+                             root=tmp_path, now=_NOW)
+
+    assert stored.info["unresolved_sessions"] == ["2026-10-14"]
+
+
+def test_an_exchange_holiday_is_not_retried(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 2026-10-20 (Diwali) is in the NSE closure calendar: missing is correct.
+    fake = _AdjustableFetch(skip={date(2026, 10, 20)})
+    monkeypatch.setattr(storage_module, "get_historical_data", fake)
+    fetch_and_store(object(), "TATASTEEL", date(2026, 10, 19), date(2026, 10, 23), "paper", root=tmp_path, now=_NOW)
+
+    fake.calls.clear()
+    stored = fetch_and_store(object(), "TATASTEEL", date(2026, 10, 19), date(2026, 10, 23), "paper",
+                             root=tmp_path, now=_NOW)
+
+    assert fake.calls == []
+    assert stored.info["unresolved_sessions"] == []
+
+
+def test_a_special_weekend_session_is_requested() -> None:
+    # Saturday 2025-02-01 was a Union Budget session; an ordinary Sunday is not.
+    assert missing_ranges([], date(2025, 2, 1), date(2025, 2, 1)) == [(date(2025, 2, 1), date(2025, 2, 1))]
+    assert missing_ranges([], date(2025, 2, 2), date(2025, 2, 2)) == []
+
+
+def test_a_split_revision_refreshes_the_whole_history_instead_of_splicing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Cached closes of 100; then a 2:1 split, after which IB serves the whole
+    # history back-adjusted to 50. Appending only the new days would splice
+    # 100s onto 50s and invent a -50% return.
+    fake = _AdjustableFetch(close=100.0)
+    monkeypatch.setattr(storage_module, "get_historical_data", fake)
+    fetch_and_store(object(), "TATASTEEL", date(2026, 10, 5), date(2026, 10, 16), "paper", root=tmp_path, now=_NOW)
+
+    fake.close = 50.0
+    stored = fetch_and_store(object(), "TATASTEEL", date(2026, 10, 5), date(2026, 10, 23), "paper",
+                             root=tmp_path, now=_NOW)
+
+    closes = stored.bars.set_index("date")["close"]
+    assert (closes == 50.0).all(), "old and new adjustment vintages were mixed"
+    assert closes.pct_change().abs().max() == 0.0
+    assert stored.info["downloads"][-1]["revision_detected"] is True

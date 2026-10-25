@@ -591,6 +591,13 @@ def test_index_bars_with_no_volume_are_kept_and_flat_holiday_bars_dropped() -> N
     assert result.metadata.sec_type == "IND"
 
 
+def test_clean_bars_rejects_infinite_prices() -> None:
+    frame = _frame([{"date": Timestamp("2026-10-23"), "high": float("inf")}])
+
+    with pytest.raises(IBKRValidationError, match="non-finite"):
+        clean_bars(frame, "TEST")
+
+
 def test_stock_requests_still_record_stk() -> None:
     ib = _FakeIB([(_weekday_bars(date(2026, 10, 19), date(2026, 10, 23)), [])])
 

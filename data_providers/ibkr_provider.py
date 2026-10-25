@@ -320,6 +320,8 @@ def clean_bars(frame: DataFrame, symbol: str, time_column: str = "date") -> tupl
     problems = []
     if prices.isna().any().any() or frame["volume"].isna().any():
         problems.append("missing OHLCV values")
+    if prices.isin([float("inf"), float("-inf")]).any().any() or frame["volume"].isin([float("inf"), float("-inf")]).any():
+        problems.append("non-finite OHLCV values")
     if (prices <= 0).any().any():
         problems.append("non-positive prices")
     if (frame["high"] < prices.max(axis=1)).any() or (frame["low"] > prices.min(axis=1)).any():
