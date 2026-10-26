@@ -1,166 +1,87 @@
 # Quant Risk and Trading Portfolio
 
-Two linked projects on the same ₹1 crore, 16-stock NSE universe. `risk_project` measures how risky an equal-weighted portfolio is (VaR, factor exposure, stress testing). `signal_project` tests two long-only signals, momentum and mean-reversion, with walk-forward validation and paper trading against live Kite Connect quotes.
-
-`risk_project` is complete. `signal_project`'s modeling pipeline is built, unit-tested, and has produced walk-forward results against production Kite data. Paper-trading execution is planned but not yet built. Prices come from Kite by default or from Interactive Brokers (see `data_providers` below).
+Two linked projects on the same ₹1 crore, equal-weighted, 16-stock NSE portfolio. `risk_project` measures its risk: VaR, factor exposure and stress tests. `signal_project` tests two long-only signals, momentum and mean-reversion, with walk-forward validation. Prices come from Kite (the default) or Interactive Brokers.
 
 ```
-python -m risk_project.run_report
-python -m signal_project.run_backtest
-python -m risk_project.run_report --source ibkr_live
-python -m signal_project.run_backtest --source ibkr_live
+python -m risk_project.run_report [--source ibkr_live]
+python -m signal_project.run_backtest [--source ibkr_live]
 ```
 
 ## risk_project
 
-**The question.** How much can a ₹1 crore equal-weighted portfolio of 16 NSE stocks lose on a bad day, what drives that risk, and how would it have held up in a crisis?
+How much can the portfolio lose on a bad day, what drives that risk, and how would it have held up in a crisis?
 
-**VaR.** I compute historical and parametric VaR at 95% and 99% over a trailing 3-year window of daily returns. Historical VaR makes no distributional assumption but only knows what the window contained. Parametric VaR uses the covariance matrix and assumes normal returns, which tends to understate tail risk.
+- **VaR:** historical and parametric, 95% and 99%, over three years of daily returns, backtested with Kupiec's test.
+- **Factors:** a Carhart four-factor regression on IIMA's daily factors (market, size, value, momentum).
+- **Stress tests:** the 2008 GFC, the 2020 COVID crash, and a hypothetical 3σ factor shock, run through the fitted betas.
 
-**Factor model.** Portfolio excess returns are regressed on IIMA's daily FF factors (market, size, value) plus a momentum factor: MF, SMB, HML, WML. We work with the Carhart four-factor model, not Fama-French.
+**Key findings** (IBKR live data, 2023-10-25 to 2026-10-23):
 
-**Stress tests.** Three scenarios run through the fitted betas: the 2008 GFC (139 trading days), the 2020 COVID crash (21 days), and a hypothetical shock of 3 standard deviations on each factor, scaled to 21 days by root-time and set against the sign of each beta. Historical factor returns are summed rather than compounded, consistent with the linear model. P&L is Σ(beta × shock) × notional, so it only captures the factor-explained part of a loss, not alpha or stock-specific moves. A scenario is flagged a breach when its loss exceeds parametric 99% VaR. Because the horizons differ (139 vs. 21 vs. 21 days), the three P&L figures shouldn't be ranked against each other.
-
-**VaR backtest.** Each VaR estimate is checked against realized returns using breach rates and Kupiec's proportion-of-failures test. A low p-value means the breach rate is too far from the target, in either direction. A high one means no evidence of miscalibration, not proof the model is right. This test is in-sample.
-
-### Results
-
-Run 2026-08-30, over 2023-08-30 to 2026-08-30 (743 trading days).
-
-| Method | 95% VaR | 99% VaR |
+| | 95% VaR | 99% VaR |
 |---|---:|---:|
-| Historical | ₹1,31,269 | ₹2,03,524 |
-| Parametric | ₹1,33,333 | ₹1,88,576 |
+| Historical | ₹1,33,093 | ₹2,04,174 |
+| Parametric | ₹1,34,999 | ₹1,90,932 |
 
-The two agree at 95%. At 99%, parametric is lower than historical, the usual signature of fat tails.
+- At 99%, parametric VaR is lower than historical: the usual sign of fat tails.
+- The portfolio is mostly a market bet. Market beta is 0.83, with small negative tilts to size, value and momentum (R² 0.84; factor data runs to 2025-12-31).
+- Crisis losses are driven by the market factor: ₹24.3 lakh (2008, 139 days), ₹28.3 lakh (COVID, 21 days), ₹15.7 lakh (3σ shock, 21 days).
+- All four VaR estimates pass Kupiec's test, in-sample.
 
-Factor regression covers 2023-08-31 to 2025-12-31 (580 observations), cut short by IIMA's data cutoff. 
-| Factor | Beta |
-|---|---:|
-| $\beta_{MF}$ | 0.834 |
-| $\beta_{SMB}$ | -0.335 |
-| $\beta_{HML}$ | -0.111 |
-| $\beta_{WML}$ | -0.048 |
-
-$\alpha$ (daily): 0.000053. $R^2$: 0.838.
-
-The portfolio is mostly a market bet with modest negative tilts to size, value, and momentum.
-
-| Scenario | P&L impact | Breaches 1-day 99% VaR | Worst factor |
-|---|---:|:---:|:---:|
-| 2008 GFC (139 days) | -₹24,13,797 | Yes | MF |
-| 2020 COVID (21 days) | -₹28,29,409 | Yes | MF |
-| Hypothetical 3σ (21 days) | -₹15,51,619 | Yes | MF |
-
-All three breach the 1-day 99% VaR, which is expected: a 21- to 139-day crisis move will almost mechanically exceed a single day's risk estimate, so this is more a sanity check than a stress-test finding. The market factor drives every loss.
-
-All four VaR estimates pass the Kupiec test. Breach rates: 5.11% and 1.08% (historical, 95%/99%), 4.58% and 1.35% (parametric), p-values between 0.37 and 0.89. Since this is in-sample, that shows internal consistency, not out-of-sample validation.
-
-### Limitations
-
-- Tata Motors excluded due to its October 2025 demerger, which complicates the price history. Mahindra & Mahindra substituted to keep auto representation.
-- Factor exposures are as of December 2025, not current, capped by IIMA's data.
-- Parametric VaR assumes normal returns and zero mean.
-- Historical VaR can't see events outside its 3-year window.
-- Stress P&L excludes alpha and idiosyncratic returns.
-- The VaR backtest is in-sample.
-
-### Next steps
-
-- A rolling out-of-sample VaR backtest.
-- A Monte Carlo or historical-simulation hybrid VaR.
-- A monthly five-factor robustness check using the Ashoka dataset (Foujdar, Juneja, Kumar, Prabhala, 2026), which runs through May 2026 and is in `risk_project/data/`.
-- Refresh the daily factor regression once newer data is available.
+**Limitations:**
+- factor data ends December 2025;
+- parametric VaR assumes normal returns;
+- stress losses cover only the factor-explained part;
+- the VaR backtest is in-sample;
+- Tata Motors is excluded because of its 2025 demerger, with M&M in its place.
 
 ## signal_project
 
-**The setup.** The ₹1 crore splits into two independent ₹50 lakh books, one momentum and one mean-reversion. Both trade all 16 stocks, so a stock can be held in one book, both, or neither.
+Two independent ₹50 lakh long-only books, each trading all 16 stocks:
 
-Signals are per stock, not cross-sectional. Sixteen names is too thin a universe for a ranking to mean much, and per-stock signals map directly onto the orders execution needs. Both books are long-only, since NSE cash delivery can't carry an overnight short. That means both inherit market beta, so every result below should be read against the NIFTY 50.
-
-| Book | Rule | Candidate lookbacks | Rebalance |
+| Book | Long when | Lookbacks tried | Rebalance |
 |---|---|---|---|
-| Momentum | Long while trailing return is positive | 3, 6, 9, 12 months | Weekly |
-| Mean-reversion | Long while trailing return is negative | 3, 5, 10 trading days | Daily |
+| Momentum | trailing return is positive | 3, 6, 9, 12 months | weekly |
+| Mean-reversion | trailing return is negative | 3, 5, 10 days | daily |
 
-**Sizing.** Inverse-volatility weights using trailing 20-day realized vol, refreshed each rebalance. Each stock is capped at 17.5% of its book. Weight above the cap redistributes across the other names, and a name that hits the cap locks there for that redistribution (without the lock, weight cycles back onto a capped name and never converges, caught by a unit test). If every active name in a book hits the cap, the book sits partly in cash rather than breach it.
+- **Sizing:** inverse-volatility weights, capped at 17.5% per stock.
+- **Risk controls:** a 2σ stop-loss per position, and no new entries while a book is more than 15% below its peak.
+- **Walk-forward:** pick the best lookback on 24 months, apply it unchanged to the next 6, then roll forward.
 
-**Risk controls.** A per-position stop-loss at 2 standard deviations of the 20-day volatility observed at entry, checked daily regardless of rebalance frequency. A book-level halt on new entries once drawdown from peak exceeds 15%, lifted once it recovers to 10%. The halt never force-liquidates existing positions. A stopped name stays out until the next scheduled rebalance (next day for mean-reversion, next week for momentum), so a stop can't be undone at the same close.
+**Key findings** (IBKR live data, out-of-sample 2017-01-05 to 2026-10-23):
 
-**Walk-forward validation.** Train on a rolling 24 months, pick the lookback with the best in-sample Sharpe, freeze it, apply unchanged over the next 6-month test window, then slide forward 6 months and repeat. Each test window starts flat at the prior window's ending NAV, so windows stitch into one continuous out-of-sample curve. All boundaries come from one calendar schedule, so each test window starts the trading day after the previous one ends and every out-of-sample day is compounded exactly once. Production Kite gives clean daily history back to 2015-01-01, about 11.7 years, which yields 20 rolling test windows per book.
-
-**Accounting.** Weights are decided at the close and earn the next day's return. Between rebalances the book holds fixed shares, so each weight drifts with its stock's price and the rest sits in cash at zero. A missing return on a held position stops the run instead of counting as zero.
-
-**Two data bugs surfaced along the way.**
-
-1. Fetching 16 tickers across 3 date chunks fires 48 back-to-back calls. Kite throttled some and returned empty instead of raising, which surfaced three layers downstream as zero walk-forward windows. `shared/data.py` now throttles every call and retries with backoff on an empty response.
-2. A roughly 20% gap survived that fix. Kite's older daily candles are timestamped at market open (09:15 IST) while newer ones sit at midnight, so two tickers ingested under different conventions don't align on the same trading day. Day candles are now normalized to midnight (minute intervals are left alone, since normalizing those would collapse distinct intraday candles). My first history-depth check missed this because it checked each ticker's completeness in isolation rather than comparing date indices across tickers.
-
-After the fix, 11 weekend dates remain in the data, and each checks out against real NSE events: Union Budget sessions, Diwali Muhurat trading, a make-up session for the 22 Jan 2024 Ram Mandir holiday, and two SEBI-mandated disaster-recovery drills. `checks/check_data_completeness.py` now flags any weekend date not already on that confirmed list, so a new alignment bug would still stand out.
-
-**Execution.** One authenticated Kite Connect client, production, used for historical data. Live paper-trading execution is planned but not built.
-
-**Testing.** Signals, sizing (including the cap-redistribution edge cases), risk controls, the backtest engine, walk-forward logic, and order translation are unit tested on synthetic data; none of it needs a live connection. The tests also check whole-system invariants: test windows never overlap, the stitched NAV compounds each day exactly once, fixed shares bring a 100 → 200 → 100 book back to 100, and a stop holds until the next rebalance. GitHub Actions runs the full offline suite on every push and pull request (`.github/workflows/tests.yml`).
-
-### Results
-
-> **Superseded.** These Kite results came from the engine before an October 2026 audit found overlapping walk-forward windows, weights reapplied daily between weekly rebalances, and stops a same-day rebalance could undo. They haven't been rerun on Kite. Corrected results on IBKR data are under `data_providers` below.
-
-Run 2026-09-08. Stitched out-of-sample window 2017-01-03 to 2026-09-08 (20 rolling 6-month test windows per book).
-
-| Book | Ending NAV (from ₹50L) | Total return | Sharpe (OOS, annualized) |
-|---|---:|---:|---:|
-| Momentum (weekly) | ₹1,66,06,066 | 232.12% | 1.07 |
-| Mean-reversion (daily) | ₹1,01,85,844 | 103.72% | 0.61 |
-
-The NIFTY 50 returned 188.69% over the same window. Since both books are long-only and inherit market beta by construction, this comparison matters: momentum modestly beat the index and mean-reversion clearly did not. How much of either result is signal versus market beta needs a proper factor decomposition, the natural link back to `risk_project`, not just this raw comparison.
-
-**Parameter stability.** The winning lookback changed between consecutive windows 37% of the time, for both signals.
-
-| Signal | Most-selected lookback | Selection counts (of 20 windows) |
-|---|---|---|
-| Momentum | 12 months | 12mo: 14, 9mo: 4, 6mo: 1, 3mo: 1 |
-| Mean-reversion | 5 days | 5d: 11, 3d: 7, 10d: 2 |
-
-Long lookbacks winning for momentum and short ones for mean-reversion makes directional sense. But with only 3-4 candidates and 20 windows, some of that switching is estimation noise rather than a genuine regime change, and I wouldn't lean on it as a strong finding.
-
-### Limitations
-
-- Small candidate grids: window-to-window switching partly reflects noise, especially for momentum at roughly 26 weekly observations per test window.
-- In-sample selection frozen for out-of-sample application reduces overfitting risk but doesn't eliminate it.
-- Each test window restarts flat, so results differ from what one continuously running book would have produced.
-- Long-only means returns include market beta, not just signal.
-- Live paper-trading execution isn't built yet.
-- Combined risk across the two books isn't addressed here.
-
-### Next steps
-
-- Build and validate live paper-trading execution.
-- A combined-book risk view using the `risk_project` framework.
-- A continuous parameter search in place of the fixed grids.
-- A long-short or market-neutral variant via F&O or SLB.
-
-## data_providers (Interactive Brokers)
-
-Interactive Brokers is a second, independent source of historical prices next to Kite, for both projects. It's read-only market data through TWS: no orders, paper and live kept apart with no fallback between them. Kite stays the default and `shared/data.py` is unchanged. Full details are in [docs/ibkr_data_provider.md](docs/ibkr_data_provider.md).
-
-- **Data.** Daily and 5-minute TRADES bars, adjusted for splits and bonuses but not dividends, so these are price returns. IB's NSE volume is IB's own partial count, not exchange volume.
-- **Cache.** Parquet files under `data/cache/ibkr/` (gitignored). Each file records what was attempted, which expected sessions came back missing, and what is verified, against an NSE session calendar (`data_providers/nse_sessions.csv`). A refresh re-downloads a few stored sessions next to every gap; if IB has revised them (a split), the whole history is downloaded again so old and new adjustments never mix.
-- **Checks.** Every price panel, from either source, goes through `shared/validation.py`: a missing ticker, a non-finite close or a long gap stops the run; a single no-trade session keeps its last close, with a warning.
-- **Closing auction.** Since NSE's closing auction started on 2026-08-03, IB's intraday bars end at 15:15. Daily closes are unaffected.
-
-Corrected backtest on cached IBKR live data, out-of-sample 2017-01-05 to 2026-10-23:
-
-| Book | Before the audit fixes | After |
+| Book | Total return | Sharpe |
 |---|---:|---:|
-| Momentum (weekly) | 218.09%, Sharpe 1.04 | 259.18%, Sharpe 1.13 |
-| Mean-reversion (daily) | 76.96%, Sharpe 0.50 | 104.15%, Sharpe 0.61 |
-| NIFTY 50 | | 173.15% |
+| Momentum | 259.18% | 1.13 |
+| Mean-reversion | 104.15% | 0.61 |
+| NIFTY 50 | 173.15% | |
 
-Most of momentum's change comes from window boundaries moving a few days and flipping three lookback choices, which says more about how sensitive the selection is than about better performance. The stop fix matters most for mean-reversion. The risk results on IBKR data (VaR, factors, stress tests) are unchanged by the fixes.
+- Momentum beat the index and mean-reversion didn't. Both are long-only, so their returns include market beta.
+- The lookback choice is fragile: shifting the window boundaries by a few days flipped three of momentum's choices and moved its return noticeably.
+- These are results after an October 2026 audit fixed engine bugs (overlapping windows, weight drift, stops). The older Kite results haven't been rerun yet.
 
-## Sharing the repository
+**Limitations:**
+- the small lookback grids make the selection noisy;
+- each test window restarts flat;
+- long-only returns include beta;
+- paper-trading execution isn't built;
+- combined risk across the two books isn't covered.
 
-Don't zip the working folder: it holds `.env` (Kite API key and secret), `.kite_session.json` (an access token), downloaded data and `.git`. Use `python -m tools.export_distribution`, which builds a ZIP from committed files only and refuses if anything looks like a credential, cache or data file.
+## Data and checks
 
-*This project's code, tests, and documentation were drafted with AI tools in the loop, including Claude Code, Sonnet 5, OpenAI Codex, and GPT-6 Astra. The modeling choices and judgment calls are mine, and so are the errors.*
+- **Prices:** Kite, or IBKR through TWS. Both are read-only market data and never place orders.
+- **IBKR bars:** adjusted for splits and bonuses, not dividends. They're cached under `data/cache/ibkr/` (gitignored) and checked against an NSE session calendar. Details: [docs/ibkr_data_provider.md](docs/ibkr_data_provider.md).
+- **Validation:** every price panel goes through `shared/validation.py`. A missing ticker or a long gap stops the run.
+- **Tests:** offline unit tests run on GitHub Actions on every push.
+- **Sharing:** to share the repo, use `python -m tools.export_distribution`, not a ZIP of the folder, because the folder holds credentials.
+
+## Possible extensions
+
+- An out-of-sample VaR backtest.
+- Re-running the Kite results on the fixed engine.
+- A combined-book risk view.
+- Paper-trading execution.
+- A long-short variant via F&O.
+
+---
+
+*Code, tests and docs were drafted with AI tools in the loop (Claude Code, Sonnet 5, OpenAI Codex, GPT-6 Astra). The modeling choices and judgment calls are mine, and so are the errors.*
