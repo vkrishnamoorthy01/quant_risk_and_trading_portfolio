@@ -20,8 +20,8 @@ COVID_WINDOW = ("2020-02-20", "2020-03-23")
 # Horizon for the hypothetical shock: ~1 trading month, chosen to match the
 # COVID window's length (21 trading days) so at least one historical
 # scenario is horizon-comparable. GFC (139 trading days) remains a longer,
-# structurally different sustained-drawdown scenario, not a sharp shock -
-# see README for the horizon-comparability caveat.
+# structurally different sustained-drawdown scenario, not a sharp shock,
+# so its loss shouldn't be ranked against the two 21-day scenarios.
 HYPOTHETICAL_HORIZON_DAYS = 21
 
 

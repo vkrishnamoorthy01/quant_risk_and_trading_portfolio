@@ -1,6 +1,6 @@
 """End-to-end risk report: fetch prices, run VaR/factor/stress/backtest
-modules in sequence, and print a summary to fill in the README's Results
-section.
+modules in sequence, and print the summary behind the README's key
+findings.
 
 Run this yourself from the repo root:
 

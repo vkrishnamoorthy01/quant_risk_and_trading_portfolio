@@ -1,5 +1,5 @@
 """End-to-end signal_project backtest: fetch prices, walk-forward each book,
-and print a summary to fill in the README's Results section.
+and print the summary behind the README's key findings.
 
 Run this yourself from the repo root:
 
