@@ -56,7 +56,7 @@ Two independent ₹50 lakh long-only books, each trading all 16 stocks:
 | NIFTY 50 | 173.15% | |
 
 - Momentum beat the index and mean-reversion didn't. Both are long-only, so their returns include market beta.
-- The lookback choice is fragile: shifting the window boundaries by a few days flipped three of momentum's choices and moved its return noticeably.
+- The lookback choice is unstable: the winner changed between windows 37% of the time for momentum and 42% for mean-reversion, and shifting the window boundaries by a few days flipped three of momentum's choices.
 - These are results after an October 2026 audit fixed engine bugs (overlapping windows, weight drift, stops). The older Kite results haven't been rerun yet.
 
 **Limitations:**
